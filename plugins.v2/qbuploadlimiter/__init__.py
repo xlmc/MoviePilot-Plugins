@@ -6,9 +6,11 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.core.config import settings
 from app.helper.downloader import DownloaderHelper
+from app.helper.service import ServiceConfigHelper
 from app.log import logger
 from app.plugins import _PluginBase
-from app.schemas import NotificationType, ServiceInfo
+from app.schemas import ServiceInfo
+from app.schemas.types import MessageChannel, NotificationType
 
 
 class QbUploadLimiter(_PluginBase):
@@ -23,7 +25,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.1"
+    plugin_version = "1.2.2"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -34,31 +36,51 @@ class QbUploadLimiter(_PluginBase):
 
     _enabled = False
     _onlyonce = False
-    _notify = True
-    _restore_on_stop = False
+    _notify_channel = None
     _share_ratio = 1
-    _upload_limit = 64
+    _upload_limit = 2000
     _interval = 10
     _downloaders = []
     _scheduler = None
     _last_result = None
     _limited_hashes: Dict[str, set] = {}
 
+    # 通知渠道类型（MoviePilot 通知配置的 type）-> MessageChannel 枚举
+    _NOTIFY_TYPE_MAP = {
+        "telegram": MessageChannel.Telegram,
+        "wechat": MessageChannel.Wechat,
+        "feishu": MessageChannel.Feishu,
+        "wechatclawbot": MessageChannel.WechatClawBot,
+        "slack": MessageChannel.Slack,
+        "discord": MessageChannel.Discord,
+        "synologychat": MessageChannel.SynologyChat,
+        "vocechat": MessageChannel.VoceChat,
+        "webpush": MessageChannel.WebPush,
+        "qqbot": MessageChannel.QQ,
+    }
+
     def init_plugin(self, config: dict = None):
         """
         初始化插件：读取配置并按需立即检测限速、启动定时检测任务。
+        插件从启用变为停用时，自动将已限速种子恢复为不限速。
         """
-        self.stop_service()
+        was_enabled = self._enabled
+        old_downloaders = self._downloaders or []
+        self._stop_scheduler()
 
         config = config or {}
         self._enabled = bool(config.get("enabled"))
         self._onlyonce = bool(config.get("onlyonce"))
-        self._notify = bool(config.get("notify", True))
-        self._restore_on_stop = bool(config.get("restore_on_stop", False))
+        self._notify_channel = (config.get("notify_channel") or "").strip() or None
         self._share_ratio = max(self._to_int(config.get("share_ratio"), 1), 0)
-        self._upload_limit = max(self._to_int(config.get("upload_limit"), 64), 0)
+        self._upload_limit = max(self._to_int(config.get("upload_limit"), 2000), 0)
         self._interval = max(self._to_int(config.get("interval"), 10), 1)
         self._downloaders = config.get("downloaders") or []
+
+        # 停用插件时自动恢复已限速种子为不限速
+        if was_enabled and not self._enabled:
+            self._restore_limits(downloaders=old_downloaders)
+
         self._limited_hashes = {}
 
         if self._onlyonce:
@@ -120,6 +142,20 @@ class QbUploadLimiter(_PluginBase):
         except Exception as err:
             logger.warning(f"{self.LOG_TAG}读取下载器配置失败：{err}")
 
+        notify_items = []
+        try:
+            seen_types = set()
+            for conf in (ServiceConfigHelper.get_notification_configs() or []):
+                if not getattr(conf, "enabled", False):
+                    continue
+                conf_type = getattr(conf, "type", "") or ""
+                conf_name = getattr(conf, "name", "") or conf_type
+                if conf_type and conf_type not in seen_types:
+                    seen_types.add(conf_type)
+                    notify_items.append({"title": conf_name, "value": conf_type})
+        except Exception as err:
+            logger.warning(f"{self.LOG_TAG}读取通知渠道配置失败：{err}")
+
         return [
             {
                 "component": "VForm",
@@ -149,21 +185,18 @@ class QbUploadLimiter(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
+                                "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
-                                        "component": "VSwitch",
-                                        "props": {"model": "restore_on_stop", "label": "停用时恢复不限速"},
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {"model": "notify", "label": "发送通知"},
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "notify_channel",
+                                            "label": "发送通知",
+                                            "items": notify_items,
+                                            "clearable": True,
+                                            "hint": "请选择 MoviePilot 系统设置中已配置并启用的通知渠道；留空表示不发送通知。",
+                                            "persistent-hint": True,
+                                        },
                                     }
                                 ],
                             },
@@ -198,7 +231,7 @@ class QbUploadLimiter(_PluginBase):
                                         "props": {
                                             "model": "upload_limit",
                                             "label": "上传限速（KB/s）",
-                                            "placeholder": "例如 1024；0 表示不限速",
+                                            "placeholder": "例如 2000；0 表示不限速",
                                             "type": "number",
                                             "min": 0,
                                         },
@@ -239,7 +272,7 @@ class QbUploadLimiter(_PluginBase):
                                         "component": "VSelect",
                                         "props": {
                                             "model": "downloaders",
-                                            "label": "下载器（qBittorrent/Transmission）",
+                                            "label": "下载器",
                                             "items": downloader_items,
                                             "multiple": True,
                                             "chips": True,
@@ -281,6 +314,7 @@ class QbUploadLimiter(_PluginBase):
         """
         limit_text = "不限速" if self._upload_limit <= 0 else f"{self._upload_limit} KB/s"
         result_text = self._last_result or "暂无执行记录"
+        notify_text = self._notify_channel or "未设置"
         downloader_text = "、".join(self._downloaders or []) or "未选择"
         return [
             {
@@ -288,7 +322,7 @@ class QbUploadLimiter(_PluginBase):
                 "props": {
                     "type": "info" if self.get_state() else "warning",
                     "variant": "tonal",
-                    "text": f"状态：{'已启用' if self.get_state() else '未启用'}；分享率阈值：{self._share_ratio}；上传限速：{limit_text}；下载器：{downloader_text}",
+                    "text": f"状态：{'已启用' if self.get_state() else '未启用'}；分享率阈值：{self._share_ratio}；上传限速：{limit_text}；通知渠道：{notify_text}；下载器：{downloader_text}",
                 },
             },
             {
@@ -305,8 +339,17 @@ class QbUploadLimiter(_PluginBase):
 
     def stop_service(self):
         """
-        停止后台任务；如配置了停用恢复，则将已限速种子恢复为不限速。
+        停止后台任务；停用或卸载插件时自动将已限速种子恢复为不限速。
         """
+        self._stop_scheduler()
+
+        if getattr(self, "_downloaders", None):
+            try:
+                self._restore_limits()
+            except Exception as err:
+                logger.error(f"{self.LOG_TAG}恢复上传不限速失败：{err}")
+
+    def _stop_scheduler(self):
         try:
             if getattr(self, "_scheduler", None):
                 self._scheduler.remove_all_jobs()
@@ -316,30 +359,28 @@ class QbUploadLimiter(_PluginBase):
         except Exception as err:
             logger.error(f"{self.LOG_TAG}停止定时任务失败：{err}")
 
-        if getattr(self, "_restore_on_stop", False) and getattr(self, "_downloaders", None):
-            try:
-                self._restore_limits(notify=False)
-            except Exception as err:
-                logger.error(f"{self.LOG_TAG}恢复上传不限速失败：{err}")
-
     def apply_limit(self, manual: bool = False):
         """
         按分享率阈值对种子应用上传限速。
         """
         if not self._enabled and not manual:
             return
-        self._set_torrent_limits(self._share_ratio, self._upload_limit, notify=self._notify)
+        self._set_torrent_limits(self._share_ratio, self._upload_limit, channel=self._notify_channel)
 
     @property
     def service_infos(self) -> Optional[Dict[str, ServiceInfo]]:
         """
         获取已连接的 qBittorrent / Transmission 下载器。
         """
-        if not self._downloaders:
+        return self._get_services()
+
+    def _get_services(self, downloaders: Optional[List[str]] = None) -> Optional[Dict[str, ServiceInfo]]:
+        names = downloaders if downloaders is not None else self._downloaders
+        if not names:
             logger.warning(f"{self.LOG_TAG}尚未选择下载器")
             return None
 
-        services = DownloaderHelper().get_services(name_filters=self._downloaders)
+        services = DownloaderHelper().get_services(name_filters=names)
         if not services:
             logger.warning(f"{self.LOG_TAG}获取下载器实例失败，请检查配置")
             return None
@@ -364,7 +405,7 @@ class QbUploadLimiter(_PluginBase):
             return None
         return active_services
 
-    def _set_torrent_limits(self, share_ratio: int, upload_limit: int, notify: bool = True) -> bool:
+    def _set_torrent_limits(self, share_ratio: int, upload_limit: int, channel: Optional[str] = None) -> bool:
         """
         检测所有选中下载器中的种子分享率，达到阈值的设置上传限速。
         """
@@ -429,19 +470,26 @@ class QbUploadLimiter(_PluginBase):
             summary_lines.append(f"处理失败：{'、'.join(failed_names)}")
         self._last_result = "\n".join(summary_lines) if summary_lines else "未检测到符合条件的种子。"
 
-        if notify and summary_lines:
-            self.post_message(
-                mtype=NotificationType.SiteMessage,
-                title="【QB上传限速】",
-                text=self._last_result,
-            )
+        if channel and summary_lines:
+            notify_channel = self._NOTIFY_TYPE_MAP.get(channel)
+            if notify_channel:
+                # 通知消息点击后直达本插件详情/设置页
+                self.post_message(
+                    channel=notify_channel,
+                    mtype=NotificationType.SiteMessage,
+                    title="【QB上传限速】",
+                    text=self._last_result,
+                    link=settings.MP_DOMAIN(f"#/plugins?tab=installed&id={self.__class__.__name__}"),
+                )
+            else:
+                logger.warning(f"{self.LOG_TAG}未知的通知渠道 [{channel}]，本次跳过通知")
         return not failed_names
 
-    def _restore_limits(self, notify: bool = False):
+    def _restore_limits(self, downloaders: Optional[List[str]] = None):
         """
         将本插件限速过的种子恢复为不限速。
         """
-        services = self.service_infos
+        services = self._get_services(downloaders)
         if not services:
             return
         for service_name, service_info in services.items():
@@ -470,8 +518,7 @@ class QbUploadLimiter(_PluginBase):
         return {
             "enabled": self._enabled,
             "onlyonce": self._onlyonce,
-            "notify": self._notify,
-            "restore_on_stop": self._restore_on_stop,
+            "notify_channel": self._notify_channel,
             "share_ratio": self._share_ratio,
             "upload_limit": self._upload_limit,
             "interval": self._interval,
