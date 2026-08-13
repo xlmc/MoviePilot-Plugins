@@ -20,17 +20,17 @@ class QbUploadLimiter(_PluginBase):
     分享率 = 上传量 / 下载量，阈值为 0 时对所有种子立即限速。
     """
 
-    plugin_name = "分享率限速"
-    plugin_desc = "当 qBittorrent / Transmission 下载器中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。"
+    plugin_name = "QB上传限速"
+    plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.0"
+    plugin_version = "1.2.1"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
     plugin_order = 30
     auth_level = 1
 
-    LOG_TAG = "[分享率限速] "
+    LOG_TAG = "[QB上传限速] "
 
     _enabled = False
     _onlyonce = False
@@ -70,7 +70,7 @@ class QbUploadLimiter(_PluginBase):
                 trigger="date",
                 run_date=datetime.datetime.now(tz=pytz.timezone(settings.TZ)) + datetime.timedelta(seconds=3),
                 kwargs={"manual": True},
-                name="立即检测分享率限速",
+                name="立即检测 QB 上传限速",
             )
             self._start_scheduler()
             return
@@ -83,7 +83,7 @@ class QbUploadLimiter(_PluginBase):
                 trigger="interval",
                 minutes=self._interval,
                 kwargs={"manual": False},
-                name="定时检测分享率限速",
+                name="定时检测 QB 上传限速",
             )
             self._start_scheduler()
 
@@ -432,7 +432,7 @@ class QbUploadLimiter(_PluginBase):
         if notify and summary_lines:
             self.post_message(
                 mtype=NotificationType.SiteMessage,
-                title="【分享率限速】",
+                title="【QB上传限速】",
                 text=self._last_result,
             )
         return not failed_names

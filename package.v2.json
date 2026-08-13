@@ -1,13 +1,14 @@
 {
   "QbUploadLimiter": {
-    "name": "分享率限速",
-    "description": "当 qBittorrent / Transmission 下载器中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。",
-    "labels": "下载管理,Qbittorrent,Transmission,限速,分享率",
-    "version": "1.2.0",
+    "name": "QB上传限速",
+    "description": "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。",
+    "labels": "下载管理,Qbittorrent,限速,分享率",
+    "version": "1.2.1",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Qbittorrent_A.png",
     "author": "xlmc",
     "level": 1,
     "history": {
+      "v1.2.1": "插件显示名与介绍恢复为「QB上传限速」；下载器下拉支持选择 MoviePilot 中已启用的 qBittorrent / Transmission 下载器。",
       "v1.2.0": "新增支持 Transmission（TR）下载器，支持 qBittorrent 与 Transmission 按分享率逐种子限速。",
       "v1.1.1": "作者信息更新为 xlmc，并补充作者主页链接。",
       "v1.1.0": "核心功能改为按分享率限速：种子分享率达到设定阈值后自动限制该种子上传速度（KB/s），支持多下载器与定时检测。",

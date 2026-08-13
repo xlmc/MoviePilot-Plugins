@@ -1,6 +1,31 @@
-# MoviePilot-Plugins
+# MoviePilot QB 上传限速插件
 
-MoviePilot V2 插件市场仓库。
+这是一个只支持 MoviePilot V2 插件市场结构的分享率限速插件。下载器下拉支持选择 MoviePilot 中已配置并启用的 qBittorrent / Transmission 下载器。
 
-### [QB分享率限速](https://github.com/xlmc/MoviePilot-Plugins/tree/main/plugins.v2/qbuploadlimiter)
-  当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。
+## 功能
+
+- 检测所选下载器中的种子分享率（分享率 = 上传量 / 下载量）
+- 种子分享率达到设定阈值（非负整数，0 表示所有种子立即限速）后，自动将该种子的上传速度限制为指定值（KB/s）
+- 支持启用后定时检测并持续应用限速，防止被其他插件或手动操作覆盖
+- 支持立即应用一次
+- 支持停用插件时恢复已限速种子的上传速度（不限速）
+
+## 安装
+
+将本仓库配置到 MoviePilot V2 插件市场后，在插件市场中安装「QB上传限速」。
+
+仓库目录结构：
+
+    plugins.v2/qbuploadlimiter/__init__.py
+    package.v2.json
+    icons/Qbittorrent_A.png
+
+## 配置说明
+
+- 启用插件：启用后立即检测一次，并按配置间隔定时检测。
+- 立即应用一次：保存后 3 秒执行一次，不要求保持启用。
+- 分享率阈值：种子的分享率 = 上传量 / 下载量；当种子分享率 ≥ 阈值时限制其上传速度。阈值为 0 时对所有种子立即限速。
+- 上传限速（KB/s）：达到阈值后的种子上传速度上限；0 表示取消限速（恢复默认）。
+- 定时检测间隔（分钟）：用于防止限速被其他插件或手动操作覆盖后失效。
+- 下载器：请选择 MoviePilot 系统设置中已配置并启用的 qBittorrent 或 Transmission 下载器。
+- 停用时恢复不限速：停用或重载插件时将已限速种子的上传速度恢复为 0（不限速）。
