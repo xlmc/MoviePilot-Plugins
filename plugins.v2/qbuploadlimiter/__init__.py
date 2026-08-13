@@ -25,7 +25,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.3"
+    plugin_version = "1.2.4"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -311,32 +311,9 @@ class QbUploadLimiter(_PluginBase):
 
     def get_page(self) -> List[dict]:
         """
-        返回插件详情页。
+        无独立详情页：点击插件卡片或通知消息将直接打开插件设置。
         """
-        limit_text = "不限速" if self._upload_limit <= 0 else f"{self._upload_limit} KB/s"
-        result_text = self._last_result or "暂无执行记录"
-        notify_text = self._notify_channel or "未设置"
-        downloader_text = "、".join(self._downloaders or []) or "未选择"
-        return [
-            {
-                "component": "VAlert",
-                "props": {
-                    "type": "info" if self.get_state() else "warning",
-                    "variant": "tonal",
-                    "text": f"状态：{'已启用' if self.get_state() else '未启用'}；分享率阈值：{self._share_ratio}；上传限速：{limit_text}；通知渠道：{notify_text}；下载器：{downloader_text}",
-                },
-            },
-            {
-                "component": "VCard",
-                "props": {"variant": "outlined", "class": "mt-3"},
-                "content": [
-                    {
-                        "component": "VCardText",
-                        "props": {"text": result_text},
-                    }
-                ],
-            },
-        ]
+        pass
 
     def stop_service(self):
         """
