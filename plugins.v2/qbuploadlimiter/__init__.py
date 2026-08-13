@@ -26,7 +26,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.5"
+    plugin_version = "1.2.6"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -164,12 +164,19 @@ class QbUploadLimiter(_PluginBase):
         site_items = []
         try:
             from app.helper.sites import SitesHelper
-            for site in SitesHelper().get_indexers() or []:
-                if not site.get("is_active"):
-                    continue
-                site_name = str(site.get("name") or "").strip()
-                if site_name:
-                    site_items.append({"title": site_name, "value": site_name})
+            # 与站点管理排序一致：按优先级（pri）排序，同优先级保持原顺序
+            site_list = [
+                site for site in (SitesHelper().get_indexers() or [])
+                if site.get("is_active") and str(site.get("name") or "").strip()
+            ]
+            site_list.sort(key=lambda s: s.get("pri") or 0)
+            site_items = [
+                {
+                    "title": str(site.get("name") or "").strip(),
+                    "value": str(site.get("name") or "").strip(),
+                }
+                for site in site_list
+            ]
         except Exception as err:
             logger.warning(f"{self.LOG_TAG}读取站点配置失败：{err}")
 
@@ -224,7 +231,7 @@ class QbUploadLimiter(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -241,7 +248,7 @@ class QbUploadLimiter(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -256,14 +263,9 @@ class QbUploadLimiter(_PluginBase):
                                     }
                                 ],
                             },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -284,7 +286,7 @@ class QbUploadLimiter(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12},
                                 "content": [
                                     {
                                         "component": "VSelect",
@@ -300,10 +302,15 @@ class QbUploadLimiter(_PluginBase):
                                         },
                                     }
                                 ],
-                            },
+                            }
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12},
                                 "content": [
                                     {
                                         "component": "VSelect",
@@ -319,7 +326,7 @@ class QbUploadLimiter(_PluginBase):
                                         },
                                     }
                                 ],
-                            },
+                            }
                         ],
                     },
                     {

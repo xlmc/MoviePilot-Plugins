@@ -3,11 +3,12 @@
     "name": "QB上传限速",
     "description": "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。",
     "labels": "下载管理,Qbittorrent,限速,分享率,站点",
-    "version": "1.2.5",
+    "version": "1.2.6",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Qbittorrent_A.png",
     "author": "xlmc",
     "level": 1,
     "history": {
+      "v1.2.6": "站点筛选独立占一行显示，站点下拉顺序与站点管理一致；分享率阈值、上传限速、定时检测间隔合并为一行。",
       "v1.2.5": "新增按站点筛选：可勾选站点，仅对所选站点下载的种子按分享率限速。",
       "v1.2.4": "点击插件卡片或通知消息直接进入插件设置，不再显示状态详情页。",
       "v1.2.3": "分享率阈值仅允许设置正整数（不允许 0 或小数）；上传限速默认值为 2000 KB/s。",
