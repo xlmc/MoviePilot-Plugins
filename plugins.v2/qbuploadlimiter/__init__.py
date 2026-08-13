@@ -26,7 +26,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.12"
+    plugin_version = "1.2.13"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -37,7 +37,7 @@ class QbUploadLimiter(_PluginBase):
 
     _enabled = False
     _onlyonce = False
-    _notify_channel = None
+    _notify_channel = []
     _share_ratio = 1
     _upload_limit = 2000
     _interval_seconds = 30
@@ -74,7 +74,7 @@ class QbUploadLimiter(_PluginBase):
         config = config or {}
         self._enabled = bool(config.get("enabled"))
         self._onlyonce = bool(config.get("onlyonce"))
-        self._notify_channel = (config.get("notify_channel") or "").strip() or None
+        self._notify_channel = self._normalize_channels(config.get("notify_channel"))
         self._share_ratio = max(self._to_int(config.get("share_ratio"), 1), 1)
         self._upload_limit = max(self._to_int(config.get("upload_limit"), 2000), 0)
         self._interval_seconds = max(self._to_int(config.get("interval_seconds"), 30), 10)
@@ -217,8 +217,10 @@ class QbUploadLimiter(_PluginBase):
                                             "model": "notify_channel",
                                             "label": "发送通知",
                                             "items": notify_items,
+                                            "multiple": True,
+                                            "chips": True,
                                             "clearable": True,
-                                            "hint": "请选择 MoviePilot 系统设置中已配置并启用的通知渠道；留空表示不发送通知。",
+                                            "hint": "可多选 MoviePilot 系统设置中已配置并启用的通知渠道；留空表示不发送通知。",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -302,6 +304,7 @@ class QbUploadLimiter(_PluginBase):
                                             "type": "number",
                                             "min": 0,
                                             "step": 1,
+                                            "hide-spin-buttons": True,
                                         },
                                     }
                                 ],
@@ -319,6 +322,7 @@ class QbUploadLimiter(_PluginBase):
                                             "type": "number",
                                             "min": 10,
                                             "step": 10,
+                                            "hide-spin-buttons": True,
                                             "hint": "建议设置 30 秒以上",
                                             "persistent-hint": True,
                                         },
@@ -427,7 +431,7 @@ class QbUploadLimiter(_PluginBase):
             return None
         return active_services
 
-    def _set_torrent_limits(self, share_ratio: int, upload_limit: int, channel: Optional[str] = None) -> bool:
+    def _set_torrent_limits(self, share_ratio: int, upload_limit: int, channel: Any = None) -> bool:
         """
         检测所有选中下载器中的种子分享率，达到阈值的设置上传限速。
         """
@@ -479,13 +483,15 @@ class QbUploadLimiter(_PluginBase):
                         if downloader.change_torrent(hash_string=torrent_hash, upload_limit=limit):
                             current_limited.add(torrent_hash)
                             new_limited += 1
-                            if limit > 0 and channel:
-                                self._send_limit_notify(
-                                    site=self._torrent_site(torrent, downloader_type),
-                                    torrent_name=torrent_name,
-                                    limit=limit,
-                                    channel=channel,
-                                )
+                            if limit > 0:
+                                channels = self._normalize_channels(channel)
+                                if channels:
+                                    self._send_limit_notify(
+                                        site=self._torrent_site(torrent, downloader_type),
+                                        torrent_name=torrent_name,
+                                        limit=limit,
+                                        channels=channels,
+                                    )
                             logger.info(f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_name}] 分享率达到 {threshold}，已限速 {self._format_limit(limit)}")
                         else:
                             failed += 1
@@ -506,12 +512,11 @@ class QbUploadLimiter(_PluginBase):
 
         return not failed_names
 
-    def _send_limit_notify(self, site: str, torrent_name: str, limit: int, channel: str) -> bool:
+    def _send_limit_notify(self, site: str, torrent_name: str, limit: int, channels: List[str]) -> bool:
         """
-        发送单条限速通知：{站点}所下的{种子}已经限速{速度} KB/s，变量加粗。
+        发送单条限速通知：{站点}所下的{种子}已经限速{速度} KB/s，变量加粗；支持多个通知渠道。
         """
-        notify_channel = self._NOTIFY_TYPE_MAP.get(channel)
-        if not notify_channel or limit <= 0:
+        if limit <= 0:
             return False
         site = (site or "").strip()
         name = (torrent_name or "").strip() or "未知种子"
@@ -519,28 +524,30 @@ class QbUploadLimiter(_PluginBase):
             text = f"**{site}**所下的**{name}**已经限速**{limit}** KB/s"
         else:
             text = f"**{name}**已经限速**{limit}** KB/s"
-        try:
-            self.post_message(
-                channel=notify_channel,
-                mtype=NotificationType.SiteMessage,
-                title="【QB上传限速】",
-                text=text,
-                link=settings.MP_DOMAIN(f"#/plugins?tab=installed&id={self.__class__.__name__}"),
-            )
-            return True
-        except Exception as err:
-            logger.error(f"{self.LOG_TAG}发送限速通知失败：{err}")
-            return False
+        sent = False
+        for channel in channels:
+            notify_channel = self._NOTIFY_TYPE_MAP.get(channel)
+            if not notify_channel:
+                continue
+            try:
+                self.post_message(
+                    channel=notify_channel,
+                    mtype=NotificationType.SiteMessage,
+                    title="【QB上传限速】",
+                    text=text,
+                    link=settings.MP_DOMAIN(f"#/plugins?tab=installed&id={self.__class__.__name__}"),
+                )
+                sent = True
+            except Exception as err:
+                logger.error(f"{self.LOG_TAG}发送限速通知失败（{channel}）：{err}")
+        return sent
 
     def _send_test_notify_if_needed(self) -> bool:
         """
-        点击「立即运行一次」时自动发送一次测试通知，仅首次发送。
+        点击「立即运行一次」时自动发送一次测试通知（支持多个渠道），仅首次发送。
         """
-        channel = self._notify_channel
-        if not channel:
-            return False
-        notify_channel = self._NOTIFY_TYPE_MAP.get(channel)
-        if not notify_channel:
+        channels = self._normalize_channels(self._notify_channel)
+        if not channels:
             return False
         try:
             if self.get_data("notify_test_sent"):
@@ -556,20 +563,26 @@ class QbUploadLimiter(_PluginBase):
         if not site:
             site = "测试站点"
         text = f"**{site}**所下的**测试种子**已经限速**{self._upload_limit}** KB/s"
-        try:
-            self.post_message(
-                channel=notify_channel,
-                mtype=NotificationType.SiteMessage,
-                title="【QB上传限速】测试通知",
-                text=text,
-                link=settings.MP_DOMAIN(f"#/plugins?tab=installed&id={self.__class__.__name__}"),
-            )
+        sent = False
+        for channel in channels:
+            notify_channel = self._NOTIFY_TYPE_MAP.get(channel)
+            if not notify_channel:
+                continue
+            try:
+                self.post_message(
+                    channel=notify_channel,
+                    mtype=NotificationType.SiteMessage,
+                    title="【QB上传限速】测试通知",
+                    text=text,
+                    link=settings.MP_DOMAIN(f"#/plugins?tab=installed&id={self.__class__.__name__}"),
+                )
+                sent = True
+            except Exception as err:
+                logger.error(f"{self.LOG_TAG}发送测试通知失败（{channel}）：{err}")
+        if sent:
             self.save_data("notify_test_sent", True)
             logger.info(f"{self.LOG_TAG}已发送测试通知（仅首次发送）")
-            return True
-        except Exception as err:
-            logger.error(f"{self.LOG_TAG}发送测试通知失败：{err}")
-            return False
+        return sent
 
     def _restore_limits(self, downloaders: Optional[List[str]] = None):
         """
@@ -611,6 +624,27 @@ class QbUploadLimiter(_PluginBase):
             "downloaders": self._downloaders,
             "sites": self._sites,
         }
+
+    @staticmethod
+    def _normalize_channels(value: Any) -> List[str]:
+        """
+        将通知渠道配置规范化为去重后的字符串列表，兼容旧版单个字符串配置。
+        """
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw = [value]
+        else:
+            try:
+                raw = list(value)
+            except TypeError:
+                raw = [value]
+        channels = []
+        for item in raw:
+            item = str(item or "").strip()
+            if item and item not in channels:
+                channels.append(item)
+        return channels
 
     @staticmethod
     def _torrent_hash(torrent: Any, downloader_type: str) -> str:
