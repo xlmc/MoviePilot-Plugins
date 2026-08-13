@@ -26,7 +26,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.8"
+    plugin_version = "1.2.9"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -40,7 +40,7 @@ class QbUploadLimiter(_PluginBase):
     _notify_channel = None
     _share_ratio = 1
     _upload_limit = 2000
-    _interval = 10
+    _interval_seconds = 60
     _downloaders = []
     _sites = []
     _site_domains: Dict[str, str] = {}
@@ -77,7 +77,13 @@ class QbUploadLimiter(_PluginBase):
         self._notify_channel = (config.get("notify_channel") or "").strip() or None
         self._share_ratio = max(self._to_int(config.get("share_ratio"), 1), 1)
         self._upload_limit = max(self._to_int(config.get("upload_limit"), 2000), 0)
-        self._interval = max(self._to_int(config.get("interval"), 10), 1)
+        raw_interval = config.get("interval_seconds")
+        if raw_interval is None:
+            # 兼容旧版「分钟」配置：自动换算为秒
+            old_minutes = max(self._to_int(config.get("interval"), 10), 1)
+            self._interval_seconds = max(old_minutes * 60, 10)
+        else:
+            self._interval_seconds = max(self._to_int(raw_interval, 60), 10)
         self._downloaders = config.get("downloaders") or []
         self._sites = [str(site).strip() for site in (config.get("sites") or []) if str(site).strip()]
         self._site_domains = self._load_site_domains()
@@ -108,7 +114,7 @@ class QbUploadLimiter(_PluginBase):
             self._scheduler.add_job(
                 func=self.apply_limit,
                 trigger="interval",
-                minutes=self._interval,
+                seconds=self._interval_seconds,
                 kwargs={"manual": False},
                 name="定时检测 QB 上传限速",
             )
@@ -313,11 +319,12 @@ class QbUploadLimiter(_PluginBase):
                                     {
                                         "component": "VTextField",
                                         "props": {
-                                            "model": "interval",
-                                            "label": "定时检测间隔（分钟）",
-                                            "placeholder": "建议 10 分钟",
+                                            "model": "interval_seconds",
+                                            "label": "定时检测间隔（秒）",
+                                            "placeholder": "建议 60，最短 10 秒",
                                             "type": "number",
-                                            "min": 1,
+                                            "min": 10,
+                                            "step": 10,
                                         },
                                     }
                                 ],
@@ -604,7 +611,7 @@ class QbUploadLimiter(_PluginBase):
             "notify_channel": self._notify_channel,
             "share_ratio": self._share_ratio,
             "upload_limit": self._upload_limit,
-            "interval": self._interval,
+            "interval_seconds": self._interval_seconds,
             "downloaders": self._downloaders,
             "sites": self._sites,
         }
