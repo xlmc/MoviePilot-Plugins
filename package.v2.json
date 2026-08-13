@@ -1,13 +1,14 @@
 {
   "QbUploadLimiter": {
     "name": "QB上传限速",
-    "description": "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。",
-    "labels": "下载管理,Qbittorrent,限速,分享率",
-    "version": "1.2.4",
+    "description": "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。",
+    "labels": "下载管理,Qbittorrent,限速,分享率,站点",
+    "version": "1.2.5",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Qbittorrent_A.png",
     "author": "xlmc",
     "level": 1,
     "history": {
+      "v1.2.5": "新增按站点筛选：可勾选站点，仅对所选站点下载的种子按分享率限速。",
       "v1.2.4": "点击插件卡片或通知消息直接进入插件设置，不再显示状态详情页。",
       "v1.2.3": "分享率阈值仅允许设置正整数（不允许 0 或小数）；上传限速默认值为 2000 KB/s。",
       "v1.2.2": "停用或卸载插件时自动恢复已限速种子为不限速；发送通知改为选择 MoviePilot 中已配置并启用的通知渠道；默认上传限速调整为 2000 KB/s。",
@@ -16,19 +17,6 @@
       "v1.1.1": "作者信息更新为 xlmc，并补充作者主页链接。",
       "v1.1.0": "核心功能改为按分享率限速：种子分享率达到设定阈值后自动限制该种子上传速度（KB/s），支持多下载器与定时检测。",
       "v1.0.0": "新增 qBittorrent 全局上传限速功能，支持多下载器、立即应用、定时重试和停用恢复不限速。"
-    }
-  },
-  "ScrapeFileClean": {
-    "name": "源文件联动清理",
-    "description": "监控源文件删除，自动联动删除媒体库中对应的硬链接文件、刮削文件（元数据、图片、字幕）与转移记录，支持延迟删除防止误删",
-    "labels": "文件整理,媒体库",
-    "version": "1.0.1",
-    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/clean.png",
-    "author": "xlmc",
-    "level": 1,
-    "history": {
-      "v1.0.1": "修复插件类名与插件ID不一致，导致安装后不在本地插件列表显示的问题。",
-      "v1.0.0": "新增源文件联动清理插件：监控源文件删除，自动联动删除硬链接、刮削文件与转移记录。"
     }
   }
 }

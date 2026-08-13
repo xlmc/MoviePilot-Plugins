@@ -1,5 +1,6 @@
 import datetime
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -23,9 +24,9 @@ class QbUploadLimiter(_PluginBase):
     """
 
     plugin_name = "QB上传限速"
-    plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。"
+    plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.4"
+    plugin_version = "1.2.5"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -41,6 +42,8 @@ class QbUploadLimiter(_PluginBase):
     _upload_limit = 2000
     _interval = 10
     _downloaders = []
+    _sites = []
+    _site_domains: Dict[str, str] = {}
     _scheduler = None
     _last_result = None
     _limited_hashes: Dict[str, set] = {}
@@ -76,6 +79,8 @@ class QbUploadLimiter(_PluginBase):
         self._upload_limit = max(self._to_int(config.get("upload_limit"), 2000), 0)
         self._interval = max(self._to_int(config.get("interval"), 10), 1)
         self._downloaders = config.get("downloaders") or []
+        self._sites = [str(site).strip() for site in (config.get("sites") or []) if str(site).strip()]
+        self._site_domains = self._load_site_domains()
 
         # 停用插件时自动恢复已限速种子为不限速
         if was_enabled and not self._enabled:
@@ -155,6 +160,18 @@ class QbUploadLimiter(_PluginBase):
                     notify_items.append({"title": conf_name, "value": conf_type})
         except Exception as err:
             logger.warning(f"{self.LOG_TAG}读取通知渠道配置失败：{err}")
+
+        site_items = []
+        try:
+            from app.helper.sites import SitesHelper
+            for site in SitesHelper().get_indexers() or []:
+                if not site.get("is_active"):
+                    continue
+                site_name = str(site.get("name") or "").strip()
+                if site_name:
+                    site_items.append({"title": site_name, "value": site_name})
+        except Exception as err:
+            logger.warning(f"{self.LOG_TAG}读取站点配置失败：{err}")
 
         return [
             {
@@ -267,7 +284,7 @@ class QbUploadLimiter(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12},
+                                "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
                                         "component": "VSelect",
@@ -283,7 +300,26 @@ class QbUploadLimiter(_PluginBase):
                                         },
                                     }
                                 ],
-                            }
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "sites",
+                                            "label": "站点（按站点筛选）",
+                                            "items": site_items,
+                                            "multiple": True,
+                                            "chips": True,
+                                            "clearable": True,
+                                            "hint": "留空表示对所有种子生效；勾选站点后，仅对所选站点下载的种子进行上传限速。",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
                         ],
                     },
                     {
@@ -396,6 +432,9 @@ class QbUploadLimiter(_PluginBase):
         limit = max(self._to_int(upload_limit, 0), 0)
         summary_lines = []
         failed_names = []
+        sites = set(self._sites or [])
+        if sites:
+            summary_lines.append(f"站点筛选：{'、'.join(sorted(sites))}")
 
         for service_name, service_info in services.items():
             downloader = service_info.instance
@@ -411,6 +450,8 @@ class QbUploadLimiter(_PluginBase):
                 for torrent in torrents:
                     torrent_hash = self._torrent_hash(torrent, downloader_type)
                     if not torrent_hash:
+                        continue
+                    if sites and self._torrent_site(torrent, downloader_type) not in sites:
                         continue
                     if self._torrent_ratio(torrent, downloader_type) >= threshold:
                         matched.append(torrent)
@@ -501,6 +542,7 @@ class QbUploadLimiter(_PluginBase):
             "upload_limit": self._upload_limit,
             "interval": self._interval,
             "downloaders": self._downloaders,
+            "sites": self._sites,
         }
 
     @staticmethod
@@ -559,6 +601,133 @@ class QbUploadLimiter(_PluginBase):
         upload_limited = getattr(torrent, "uploadLimited", False)
         upload_limit = getattr(torrent, "uploadLimit", 0) or 0
         return bool(upload_limited) and int(upload_limit) == limit_kb
+
+    def _load_site_domains(self) -> Dict[str, str]:
+        """
+        构建 站点域名 -> 站点名称 映射，用于识别种子所属站点。
+        """
+        domains = {}
+        try:
+            from app.helper.sites import SitesHelper
+            for site in SitesHelper().get_indexers() or []:
+                if not site.get("is_active"):
+                    continue
+                name = str(site.get("name") or "").strip()
+                if not name:
+                    continue
+                domain = str(site.get("domain") or "").strip().lower()
+                if domain:
+                    domains[domain] = name
+                url = str(site.get("url") or "").strip()
+                if url:
+                    url_domain = self._normalize_domain(url)
+                    if url_domain:
+                        domains[url_domain] = name
+        except Exception as err:
+            logger.warning(f"{self.LOG_TAG}读取站点配置失败：{err}")
+        return domains
+
+    def _torrent_site(self, torrent: Any, downloader_type: str) -> str:
+        """
+        识别种子所属站点：优先通过 tracker 域名匹配，其次匹配标签/分类中的站点名。
+        """
+        for url in self._torrent_tracker_urls(torrent, downloader_type):
+            domain = self._normalize_domain(url)
+            if domain:
+                hit = self._lookup_site_by_domain(domain)
+                if hit:
+                    return hit
+        names = {name.lower(): name for name in self._site_domains.values()}
+        for tag in self._torrent_tags(torrent, downloader_type):
+            hit = names.get(str(tag).strip().lower())
+            if hit:
+                return hit
+        category = self._torrent_category(torrent, downloader_type)
+        if category:
+            hit = names.get(str(category).strip().lower())
+            if hit:
+                return hit
+        return ""
+
+    def _lookup_site_by_domain(self, host: str) -> str:
+        """
+        按域名（含子域名逐级回退）查找站点名称。
+        """
+        host = (host or "").strip().lower()
+        if not host:
+            return ""
+        if host.startswith("www."):
+            host = host[4:]
+        if host in self._site_domains:
+            return self._site_domains[host]
+        labels = host.split(".")
+        for i in range(1, len(labels)):
+            candidate = ".".join(labels[i:])
+            if candidate in self._site_domains:
+                return self._site_domains[candidate]
+        return ""
+
+    @staticmethod
+    def _torrent_tracker_urls(torrent: Any, downloader_type: str) -> List[str]:
+        """
+        获取种子 tracker 地址列表。
+        """
+        urls = []
+        if downloader_type == "qbittorrent":
+            if isinstance(torrent, dict):
+                tracker = torrent.get("tracker") or ""
+                if tracker:
+                    urls.append(str(tracker))
+        else:
+            tracker_list = str(getattr(torrent, "trackerList", "") or "").strip()
+            if tracker_list:
+                urls.extend(
+                    url.strip() for url in tracker_list.splitlines() if url.strip()
+                )
+            trackers = getattr(torrent, "trackers", None) or []
+            for tracker in trackers:
+                if isinstance(tracker, dict):
+                    announce = tracker.get("announce") or ""
+                else:
+                    announce = getattr(tracker, "announce", "") or ""
+                if announce:
+                    urls.append(str(announce))
+        return urls
+
+    @staticmethod
+    def _torrent_tags(torrent: Any, downloader_type: str) -> List[str]:
+        """
+        获取种子标签。
+        """
+        if downloader_type == "qbittorrent":
+            if not isinstance(torrent, dict):
+                return []
+            tags = torrent.get("tags") or ""
+            return [str(tag).strip() for tag in str(tags).split(",") if str(tag).strip()]
+        labels = getattr(torrent, "labels", None) or []
+        return [str(label).strip() for label in labels if str(label).strip()]
+
+    @staticmethod
+    def _torrent_category(torrent: Any, downloader_type: str) -> str:
+        """
+        获取种子分类。
+        """
+        if downloader_type == "qbittorrent" and isinstance(torrent, dict):
+            return str(torrent.get("category") or "").strip()
+        return ""
+
+    @staticmethod
+    def _normalize_domain(url: str) -> str:
+        """
+        提取 URL 的域名部分（去除协议、端口与路径）。
+        """
+        try:
+            host = (urlparse(str(url or "")).hostname or "").strip().lower()
+        except Exception:
+            return ""
+        if host.startswith("www."):
+            host = host[4:]
+        return host
 
     @staticmethod
     def _to_int(value: Any, default: int = 0) -> int:
