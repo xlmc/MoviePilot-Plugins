@@ -133,7 +133,7 @@ class FileMonitorHandler(FileSystemEventHandler):
     目录监控处理：维护文件状态集合，并响应创建/删除事件。
     """
 
-    def __init__(self, monpath: str, sync: "SourceFileClean", **kwargs):
+    def __init__(self, monpath: str, sync: "ScrapeFileClean", **kwargs):
         super(FileMonitorHandler, self).__init__(**kwargs)
         self._watch_path = monpath
         self.sync = sync
@@ -261,7 +261,7 @@ def update_state(monitor_dirs: List[str]) -> Dict[str, FileInfo]:
     return file_state
 
 
-class SourceFileClean(_PluginBase):
+class ScrapeFileClean(_PluginBase):
     """
     源文件联动清理插件主类
     """
@@ -270,7 +270,7 @@ class SourceFileClean(_PluginBase):
     plugin_name = "源文件联动清理"
     plugin_desc = "监控源文件删除，自动联动删除媒体库中对应的硬链接文件、刮削文件（元数据、图片、字幕）与转移记录，支持延迟删除防止误删"
     plugin_icon = "clean.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "sourcefileclean_"
