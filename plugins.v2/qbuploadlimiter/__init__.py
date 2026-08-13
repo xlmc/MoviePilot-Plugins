@@ -37,7 +37,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.14"
+    plugin_version = "1.2.15"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -108,6 +108,15 @@ class QbUploadLimiter(_PluginBase):
         # 站点映射（域名 -> 名称、名称小写 -> 名称）只构建一次，供本轮所有种子复用
         self._site_domains = self._load_site_domains()
         self._site_names = {name.lower(): name for name in self._site_domains.values() if name}
+
+        # 版本升级后允许重新发送一次测试通知（同一版本内仍仅发送一次），
+        # 便于升级后验证通知渠道是否可用
+        try:
+            if self.get_data("last_version") != self.plugin_version:
+                self.save_data("notify_test_sent", False)
+                self.save_data("last_version", self.plugin_version)
+        except Exception:
+            pass
 
         # 停用插件时自动恢复已限速种子为不限速
         if was_enabled and not self._enabled:
