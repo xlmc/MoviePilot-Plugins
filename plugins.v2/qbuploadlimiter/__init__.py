@@ -19,13 +19,13 @@ class QbUploadLimiter(_PluginBase):
 
     当 qBittorrent / Transmission 下载器中已下载的种子分享率达到设定阈值时，
     自动将该种子的上传速度限制为指定值（KB/s）。
-    分享率 = 上传量 / 下载量，阈值为 0 时对所有种子立即限速。
+    分享率 = 上传量 / 下载量，阈值为正整数，达到阈值后自动限速。
     """
 
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.2"
+    plugin_version = "1.2.3"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -72,7 +72,7 @@ class QbUploadLimiter(_PluginBase):
         self._enabled = bool(config.get("enabled"))
         self._onlyonce = bool(config.get("onlyonce"))
         self._notify_channel = (config.get("notify_channel") or "").strip() or None
-        self._share_ratio = max(self._to_int(config.get("share_ratio"), 1), 0)
+        self._share_ratio = max(self._to_int(config.get("share_ratio"), 1), 1)
         self._upload_limit = max(self._to_int(config.get("upload_limit"), 2000), 0)
         self._interval = max(self._to_int(config.get("interval"), 10), 1)
         self._downloaders = config.get("downloaders") or []
@@ -214,9 +214,9 @@ class QbUploadLimiter(_PluginBase):
                                         "props": {
                                             "model": "share_ratio",
                                             "label": "分享率阈值",
-                                            "placeholder": "非负整数，例如 1；0 表示所有种子立即限速",
+                                            "placeholder": "正整数，例如 1；分享率达到该值后限速",
                                             "type": "number",
-                                            "min": 0,
+                                            "min": 1,
                                             "step": 1,
                                         },
                                     }
@@ -234,6 +234,7 @@ class QbUploadLimiter(_PluginBase):
                                             "placeholder": "例如 2000；0 表示不限速",
                                             "type": "number",
                                             "min": 0,
+                                            "step": 1,
                                         },
                                     }
                                 ],
@@ -297,7 +298,7 @@ class QbUploadLimiter(_PluginBase):
                                         "props": {
                                             "type": "info",
                                             "variant": "tonal",
-                                            "text": "本插件按分享率逐种子限速：种子分享率（上传量/下载量）达到阈值后，其上传速度将被限制为设定值（KB/s）。分享率阈值为 0 时对所有种子立即限速；上传限速填 0 表示恢复该种子不限速。支持 qBittorrent 和 Transmission。",
+                                            "text": "本插件按分享率逐种子限速：种子分享率（上传量/下载量）达到设定的正整数阈值后，其上传速度将被限制为设定值（KB/s）。上传限速填 0 表示恢复该种子不限速。支持 qBittorrent 和 Transmission。",
                                         },
                                     }
                                 ],
@@ -414,7 +415,7 @@ class QbUploadLimiter(_PluginBase):
             self._last_result = "没有可用的 qBittorrent/Transmission 下载器，未执行限速。"
             return False
 
-        threshold = max(self._to_int(share_ratio, 1), 0)
+        threshold = max(self._to_int(share_ratio, 1), 1)
         limit = max(self._to_int(upload_limit, 0), 0)
         summary_lines = []
         failed_names = []

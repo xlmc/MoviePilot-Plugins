@@ -3,11 +3,12 @@
     "name": "QB上传限速",
     "description": "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。",
     "labels": "下载管理,Qbittorrent,限速,分享率",
-    "version": "1.2.2",
+    "version": "1.2.3",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Qbittorrent_A.png",
     "author": "xlmc",
     "level": 1,
     "history": {
+      "v1.2.3": "分享率阈值仅允许设置正整数（不允许 0 或小数）；上传限速默认值为 2000 KB/s。",
       "v1.2.2": "停用或卸载插件时自动恢复已限速种子为不限速；发送通知改为选择 MoviePilot 中已配置并启用的通知渠道；默认上传限速调整为 2000 KB/s。",
       "v1.2.1": "插件显示名与介绍恢复为「QB上传限速」；下载器下拉支持选择 MoviePilot 中已启用的 qBittorrent / Transmission 下载器。",
       "v1.2.0": "新增支持 Transmission（TR）下载器，支持 qBittorrent 与 Transmission 按分享率逐种子限速。",
