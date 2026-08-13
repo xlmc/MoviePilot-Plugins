@@ -26,7 +26,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.10"
+    plugin_version = "1.2.11"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -40,7 +40,7 @@ class QbUploadLimiter(_PluginBase):
     _notify_channel = None
     _share_ratio = 1
     _upload_limit = 2000
-    _interval_seconds = 60
+    _interval_seconds = 30
     _downloaders = []
     _sites = []
     _site_domains: Dict[str, str] = {}
@@ -78,12 +78,12 @@ class QbUploadLimiter(_PluginBase):
         self._share_ratio = max(self._to_int(config.get("share_ratio"), 1), 1)
         self._upload_limit = max(self._to_int(config.get("upload_limit"), 2000), 0)
         raw_interval = config.get("interval_seconds")
-        if raw_interval is None:
+        if raw_interval is None and "interval" in (config or {}):
             # 兼容旧版「分钟」配置：自动换算为秒
             old_minutes = max(self._to_int(config.get("interval"), 10), 1)
             self._interval_seconds = max(old_minutes * 60, 10)
         else:
-            self._interval_seconds = max(self._to_int(raw_interval, 60), 10)
+            self._interval_seconds = max(self._to_int(raw_interval, 30), 10)
         self._downloaders = config.get("downloaders") or []
         self._sites = [str(site).strip() for site in (config.get("sites") or []) if str(site).strip()]
         self._site_domains = self._load_site_domains()
@@ -321,11 +321,11 @@ class QbUploadLimiter(_PluginBase):
                                         "props": {
                                             "model": "interval_seconds",
                                             "label": "定时检测间隔（秒）",
-                                            "placeholder": "单位：秒，建议设置 30 秒以上",
+                                            "placeholder": "建议设置 30 秒以上",
                                             "type": "number",
                                             "min": 10,
                                             "step": 10,
-                                            "hint": "单位：秒；建议设置 30 秒以上（最短 10 秒）。",
+                                            "hint": "建议设置 30 秒以上",
                                             "persistent-hint": True,
                                         },
                                     }
