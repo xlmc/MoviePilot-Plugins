@@ -13,24 +13,24 @@ from app.schemas import NotificationType, ServiceInfo
 
 class QbUploadLimiter(_PluginBase):
     """
-    qBittorrent 分享率限速插件。
+    分享率限速插件。
 
-    当 qBittorrent 中已下载的种子分享率达到设定阈值时，
+    当 qBittorrent / Transmission 下载器中已下载的种子分享率达到设定阈值时，
     自动将该种子的上传速度限制为指定值（KB/s）。
     分享率 = 上传量 / 下载量，阈值为 0 时对所有种子立即限速。
     """
 
-    plugin_name = "QB分享率限速"
-    plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。"
+    plugin_name = "分享率限速"
+    plugin_desc = "当 qBittorrent / Transmission 下载器中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.1.1"
+    plugin_version = "1.2.0"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
     plugin_order = 30
     auth_level = 1
 
-    LOG_TAG = "[QB分享率限速] "
+    LOG_TAG = "[分享率限速] "
 
     _enabled = False
     _onlyonce = False
@@ -70,7 +70,7 @@ class QbUploadLimiter(_PluginBase):
                 trigger="date",
                 run_date=datetime.datetime.now(tz=pytz.timezone(settings.TZ)) + datetime.timedelta(seconds=3),
                 kwargs={"manual": True},
-                name="立即检测 QB 分享率限速",
+                name="立即检测分享率限速",
             )
             self._start_scheduler()
             return
@@ -83,7 +83,7 @@ class QbUploadLimiter(_PluginBase):
                 trigger="interval",
                 minutes=self._interval,
                 kwargs={"manual": False},
-                name="定时检测 QB 分享率限速",
+                name="定时检测分享率限速",
             )
             self._start_scheduler()
 
@@ -115,7 +115,7 @@ class QbUploadLimiter(_PluginBase):
             downloader_items = [
                 {"title": config.name, "value": config.name}
                 for config in (DownloaderHelper().get_configs() or {}).values()
-                if getattr(config, "type", "") == "qbittorrent"
+                if getattr(config, "type", "") in ("qbittorrent", "transmission")
             ]
         except Exception as err:
             logger.warning(f"{self.LOG_TAG}读取下载器配置失败：{err}")
@@ -239,12 +239,12 @@ class QbUploadLimiter(_PluginBase):
                                         "component": "VSelect",
                                         "props": {
                                             "model": "downloaders",
-                                            "label": "qBittorrent 下载器",
+                                            "label": "下载器（qBittorrent/Transmission）",
                                             "items": downloader_items,
                                             "multiple": True,
                                             "chips": True,
                                             "clearable": True,
-                                            "hint": "留空时不会修改任何下载器；请选择 MoviePilot 中已配置的 qBittorrent 下载器。",
+                                            "hint": "留空时不会修改任何下载器；请选择 MoviePilot 中已配置的 qBittorrent 或 Transmission 下载器。",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -264,7 +264,7 @@ class QbUploadLimiter(_PluginBase):
                                         "props": {
                                             "type": "info",
                                             "variant": "tonal",
-                                            "text": "本插件按分享率逐种子限速：种子分享率（上传量/下载量）达到阈值后，其上传速度将被限制为设定值（KB/s）。分享率阈值为 0 时对所有种子立即限速；上传限速填 0 表示恢复该种子不限速。",
+                                            "text": "本插件按分享率逐种子限速：种子分享率（上传量/下载量）达到阈值后，其上传速度将被限制为设定值（KB/s）。分享率阈值为 0 时对所有种子立即限速；上传限速填 0 表示恢复该种子不限速。支持 qBittorrent 和 Transmission。",
                                         },
                                     }
                                 ],
@@ -333,10 +333,10 @@ class QbUploadLimiter(_PluginBase):
     @property
     def service_infos(self) -> Optional[Dict[str, ServiceInfo]]:
         """
-        获取已连接的 qBittorrent 下载器。
+        获取已连接的 qBittorrent / Transmission 下载器。
         """
         if not self._downloaders:
-            logger.warning(f"{self.LOG_TAG}尚未选择 qBittorrent 下载器")
+            logger.warning(f"{self.LOG_TAG}尚未选择下载器")
             return None
 
         services = DownloaderHelper().get_services(name_filters=self._downloaders)
@@ -347,8 +347,9 @@ class QbUploadLimiter(_PluginBase):
         helper = DownloaderHelper()
         active_services = {}
         for service_name, service_info in services.items():
-            if not helper.is_downloader(service_type="qbittorrent", service=service_info):
-                logger.warning(f"{self.LOG_TAG}下载器 [{service_name}] 不是 qBittorrent，已跳过")
+            if not (helper.is_downloader(service_type="qbittorrent", service=service_info)
+                    or helper.is_downloader(service_type="transmission", service=service_info)):
+                logger.warning(f"{self.LOG_TAG}下载器 [{service_name}] 不是 qBittorrent/Transmission，已跳过")
                 continue
             if not getattr(service_info, "instance", None):
                 logger.warning(f"{self.LOG_TAG}下载器 [{service_name}] 实例不存在，已跳过")
@@ -359,7 +360,7 @@ class QbUploadLimiter(_PluginBase):
             active_services[service_name] = service_info
 
         if not active_services:
-            logger.warning(f"{self.LOG_TAG}没有可用的 qBittorrent 下载器")
+            logger.warning(f"{self.LOG_TAG}没有可用的 qBittorrent/Transmission 下载器")
             return None
         return active_services
 
@@ -369,7 +370,7 @@ class QbUploadLimiter(_PluginBase):
         """
         services = self.service_infos
         if not services:
-            self._last_result = "没有可用的 qBittorrent 下载器，未执行限速。"
+            self._last_result = "没有可用的 qBittorrent/Transmission 下载器，未执行限速。"
             return False
 
         threshold = max(self._to_int(share_ratio, 1), 0)
@@ -379,6 +380,7 @@ class QbUploadLimiter(_PluginBase):
 
         for service_name, service_info in services.items():
             downloader = service_info.instance
+            downloader_type = getattr(service_info, "type", "")
             try:
                 torrents, error = downloader.get_torrents()
                 if error or not torrents:
@@ -388,21 +390,10 @@ class QbUploadLimiter(_PluginBase):
 
                 matched = []
                 for torrent in torrents:
-                    if not isinstance(torrent, dict):
-                        continue
-                    torrent_hash = str(torrent.get("hash") or "").strip()
+                    torrent_hash = self._torrent_hash(torrent, downloader_type)
                     if not torrent_hash:
                         continue
-                    ratio = torrent.get("ratio")
-                    if ratio is None:
-                        uploaded = torrent.get("uploaded") or 0
-                        downloaded = torrent.get("downloaded") or 0
-                        ratio = uploaded / downloaded if downloaded else 0
-                    try:
-                        ratio = float(ratio)
-                    except (TypeError, ValueError):
-                        ratio = 0
-                    if ratio >= threshold:
+                    if self._torrent_ratio(torrent, downloader_type) >= threshold:
                         matched.append(torrent)
 
                 new_limited = 0
@@ -410,9 +401,9 @@ class QbUploadLimiter(_PluginBase):
                 failed = 0
                 current_limited = self._limited_hashes.setdefault(service_name, set())
                 for torrent in matched:
-                    torrent_hash = str(torrent.get("hash") or "").strip()
-                    torrent_name = torrent.get("name") or torrent_hash
-                    if torrent.get("up_limit") == limit * 1024:
+                    torrent_hash = self._torrent_hash(torrent, downloader_type)
+                    torrent_name = self._torrent_name(torrent, downloader_type) or torrent_hash
+                    if self._torrent_current_limit(torrent, downloader_type, limit):
                         current_limited.add(torrent_hash)
                         already += 1
                         continue
@@ -441,7 +432,7 @@ class QbUploadLimiter(_PluginBase):
         if notify and summary_lines:
             self.post_message(
                 mtype=NotificationType.SiteMessage,
-                title="【QB分享率限速】",
+                title="【分享率限速】",
                 text=self._last_result,
             )
         return not failed_names
@@ -486,6 +477,63 @@ class QbUploadLimiter(_PluginBase):
             "interval": self._interval,
             "downloaders": self._downloaders,
         }
+
+    @staticmethod
+    def _torrent_hash(torrent: Any, downloader_type: str) -> str:
+        """
+        获取种子哈希。
+        """
+        if downloader_type == "qbittorrent":
+            return str(torrent.get("hash") or "").strip() if isinstance(torrent, dict) else ""
+        return str(getattr(torrent, "hashString", "") or getattr(torrent, "id", "") or "").strip()
+
+    @staticmethod
+    def _torrent_name(torrent: Any, downloader_type: str) -> str:
+        """
+        获取种子名称。
+        """
+        if downloader_type == "qbittorrent":
+            return str(torrent.get("name") or "") if isinstance(torrent, dict) else ""
+        return str(getattr(torrent, "name", "") or "")
+
+    @staticmethod
+    def _torrent_ratio(torrent: Any, downloader_type: str) -> float:
+        """
+        获取种子分享率（上传量 / 下载量）。
+        """
+        if downloader_type == "qbittorrent":
+            if not isinstance(torrent, dict):
+                return 0.0
+            ratio = torrent.get("ratio")
+            if ratio is None:
+                uploaded = torrent.get("uploaded") or 0
+                downloaded = torrent.get("downloaded") or 0
+                ratio = uploaded / downloaded if downloaded else 0
+        else:
+            ratio = getattr(torrent, "uploadRatio", None)
+            if ratio is None:
+                ratio = getattr(torrent, "ratio", None)
+            if ratio is None:
+                uploaded = getattr(torrent, "uploadedEver", 0) or 0
+                downloaded = getattr(torrent, "downloadedEver", 0) or 0
+                ratio = uploaded / downloaded if downloaded else 0
+        try:
+            return float(ratio or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _torrent_current_limit(torrent: Any, downloader_type: str, limit_kb: int) -> bool:
+        """
+        判断种子当前上传限速是否已是目标值。
+        """
+        if downloader_type == "qbittorrent":
+            if not isinstance(torrent, dict):
+                return False
+            return torrent.get("up_limit") == limit_kb * 1024
+        upload_limited = getattr(torrent, "uploadLimited", False)
+        upload_limit = getattr(torrent, "uploadLimit", 0) or 0
+        return bool(upload_limited) and int(upload_limit) == limit_kb
 
     @staticmethod
     def _to_int(value: Any, default: int = 0) -> int:
