@@ -3,11 +3,12 @@
     "name": "QB分享率限速",
     "description": "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、定时检测和停用恢复。",
     "labels": "下载管理,Qbittorrent,限速,分享率",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Qbittorrent_A.png",
-    "author": "custom",
+    "author": "xlmc",
     "level": 1,
     "history": {
+      "v1.1.1": "作者信息更新为 xlmc，并补充作者主页链接。",
       "v1.1.0": "核心功能改为按分享率限速：种子分享率达到设定阈值后自动限制该种子上传速度（KB/s），支持多下载器与定时检测。",
       "v1.0.0": "新增 qBittorrent 全局上传限速功能，支持多下载器、立即应用、定时重试和停用恢复不限速。"
     }
