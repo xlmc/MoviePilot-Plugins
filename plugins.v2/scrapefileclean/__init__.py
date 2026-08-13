@@ -270,7 +270,7 @@ class ScrapeFileClean(_PluginBase):
     plugin_name = "源文件联动清理"
     plugin_desc = "监控源文件删除，自动联动删除媒体库中对应的硬链接文件、刮削文件（元数据、图片、字幕）与转移记录，支持延迟删除防止误删"
     plugin_icon = "clean.png"
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "sourcefileclean_"
