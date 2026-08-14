@@ -39,7 +39,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.18"
+    plugin_version = "1.2.19"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -113,6 +113,14 @@ class QbUploadLimiter(_PluginBase):
         # 站点映射（域名 -> 名称、名称小写 -> 名称）只构建一次，供本轮所有种子复用
         self._site_domains = self._load_site_domains()
         self._site_names = {name.lower(): name for name in self._site_domains.values() if name}
+
+        # 规范化持久化：修正历史遗留的非法配置（如分享率阈值 0、字符串数字等），
+        # 避免非法值回显到表单或影响后续逻辑
+        try:
+            if self._current_config() != config:
+                self.update_config(self._current_config())
+        except Exception:
+            pass
 
         # 版本升级后允许重新发送一次测试通知（同一版本内仍仅发送一次），
         # 便于升级后验证通知渠道是否可用
@@ -353,10 +361,14 @@ class QbUploadLimiter(_PluginBase):
                                         "props": {
                                             "model": "share_ratio",
                                             "label": "分享率阈值",
-                                            "placeholder": "正整数，例如 1；分享率达到该值后限速",
+                                            "placeholder": "正整数（≥1），不允许填 0；分享率达到该值后限速",
                                             "type": "number",
                                             "min": 1,
                                             "step": 1,
+                                            "hint": "不允许填 0，分享率阈值必须为正整数（≥1）",
+                                            "persistent-hint": True,
+                                            "onKeydown": "function (e) { if (e.key === '0') { var v = e.target.value || ''; var s = e.target.selectionStart || 0; var en = e.target.selectionEnd || 0; var next = v.slice(0, s) + '0' + v.slice(en); if (/^0+$/.test(next)) { e.preventDefault(); } } }",
+                                            "onPaste": "function (e) { var t = (e.clipboardData || window.clipboardData).getData('text'); if (/^0+$/.test(t)) { var v = e.target.value || ''; var s = e.target.selectionStart || 0; var en = e.target.selectionEnd || 0; var next = v.slice(0, s) + t + v.slice(en); if (/^0+$/.test(next)) { e.preventDefault(); } } }",
                                         },
                                     }
                                 ],
@@ -395,6 +407,7 @@ class QbUploadLimiter(_PluginBase):
                                             "hide-spin-buttons": True,
                                             "hint": "建议设置 30 秒以上",
                                             "persistent-hint": True,
+                                            "onKeydown": "function (e) { if (e.key === '0') { var v = e.target.value || ''; var s = e.target.selectionStart || 0; var en = e.target.selectionEnd || 0; var next = v.slice(0, s) + '0' + v.slice(en); if (/^0+$/.test(next)) { e.preventDefault(); } } }",
                                         },
                                     }
                                 ],
@@ -458,7 +471,7 @@ class QbUploadLimiter(_PluginBase):
                                         "props": {
                                             "type": "info",
                                             "variant": "tonal",
-                                            "text": "本插件按分享率逐种子限速：种子分享率（上传量/下载量）达到设定的正整数阈值后，其上传速度将被限制为设定值（KB/s）。上传速度填 0 表示分享率达到阈值后不做限速处理；上传速度、检测间隔与两个监控超时均须为正整数（两个监控超时填 0 表示不启用对应功能）。支持 qBittorrent 和 Transmission。",
+                                            "text": "本插件按分享率逐种子限速：种子分享率（上传量/下载量）达到设定的正整数阈值（不允许填 0）后，其上传速度将被限制为设定值（KB/s）。上传速度填 0 表示分享率达到阈值后不做限速处理；上传速度、检测间隔与两个监控超时均须为正整数（两个监控超时填 0 表示不启用对应功能）。支持 qBittorrent 和 Transmission。",
                                         },
                                     }
                                 ],
