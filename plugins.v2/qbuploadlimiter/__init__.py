@@ -39,7 +39,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.19"
+    plugin_version = "1.2.20"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -70,8 +70,13 @@ class QbUploadLimiter(_PluginBase):
 
     _scheduler = None
     _last_result = None
-    # 已被本插件限速的种子：{下载器名称: {种子Hash}}，用于停用/卸载时恢复
+    # 已被本插件限速且仍受监控的种子：{下载器名称: {种子Hash}}
     _limited_hashes: Dict[str, set] = {}
+    # 本插件本次会话中设置过限速、停用/卸载时必须恢复的种子：{下载器名称: {种子Hash}}
+    _restore_hashes: Dict[str, set] = {}
+    # 已下载完成种子上传速度持续低于限速值的起始时间：{下载器名称: {种子Hash: 时间戳}}
+    # 用于「下载完成后监控超时」的连续低速计时，速度回升到限速值即清零重新计时
+    _complete_slow_since: Dict[str, Dict[str, float]] = {}
 
     # 通知渠道类型（MoviePilot 通知配置的 type）-> MessageChannel 枚举
     _NOTIFY_TYPE_MAP = {
@@ -137,9 +142,10 @@ class QbUploadLimiter(_PluginBase):
 
         # 每次重新初始化时清空限速记录，避免旧记录影响新会话
         self._limited_hashes = {}
+        self._restore_hashes = {}
         self._limited_times = {}
         self._slow_since = {}
-        self._speed_ok = {}
+        self._complete_slow_since = {}
         self._canceled_hashes = {}
 
         # 「立即运行一次」：延迟 3 秒执行一次手动检测（含首次测试通知）
@@ -431,7 +437,7 @@ class QbUploadLimiter(_PluginBase):
                                             "min": 0,
                                             "step": 1,
                                             "hide-spin-buttons": True,
-                                            "hint": "种子下载完成后，若在设定秒数内上传速度始终达不到限速值，则取消监控，不再设置限速",
+                                            "hint": "种子下载完成后，插件持续监控其上传速度；上传速度持续低于限速值达到设定秒数时，取消监控，不再设置限速",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -602,6 +608,9 @@ class QbUploadLimiter(_PluginBase):
                     logger.warning(f"{self.LOG_TAG}获取下载器 [{service_name}] 种子列表失败")
                     continue
 
+                now = time.time()
+                # 刷新已完成种子的监控计时与速度达标记录，并清理已不存在的种子状态
+                self._refresh_torrent_state(service_name, torrents, downloader_type, limit, now)
                 # 站点识别缓存：{种子Hash: 站点名称}，同一轮内每个种子只计算一次
                 site_cache: Dict[str, str] = {}
                 # 筛选出达标且（可选）属于勾选站点的种子
@@ -660,6 +669,9 @@ class QbUploadLimiter(_PluginBase):
             torrent_hash = self._torrent_hash(torrent, downloader_type)
             if not torrent_hash:
                 continue
+            # 只处理已下载完成的种子，下载中的种子即使分享率达标也不限速
+            if not self._torrent_completed(torrent, downloader_type):
+                continue
             # 站点筛选：识别站点并校验是否属于勾选列表
             if selected:
                 site = self._resolve_site(torrent, torrent_hash, downloader_type, history_sites, site_cache)
@@ -670,6 +682,45 @@ class QbUploadLimiter(_PluginBase):
                 continue
             matched.append(torrent)
         return matched
+
+    def _refresh_torrent_state(
+        self, service_name: str, torrents: List[Any], downloader_type: str, limit: int, now: float
+    ):
+        """
+        每个检测周期刷新种子监控状态：
+        - 为已下载完成的种子维护「上传速度持续低于限速值」的连续低速计时：
+          速度低于限速值时开始/延续计时，速度回升到限速值即清零重新计时
+          （仅「下载完成后监控超时」启用且限速值大于 0 时需要）；
+        - 清理已不在下载器中的种子状态，避免记录无限增长。
+        """
+        current_hashes = set()
+        for torrent in torrents:
+            torrent_hash = self._torrent_hash(torrent, downloader_type)
+            if not torrent_hash:
+                continue
+            current_hashes.add(torrent_hash)
+            if self._complete_timeout > 0 and limit > 0 and self._torrent_completed(torrent, downloader_type):
+                slow_map = self._complete_slow_since.setdefault(service_name, {})
+                if self._torrent_upload_speed(torrent, downloader_type) < limit * 1024:
+                    if torrent_hash not in slow_map:
+                        slow_map[torrent_hash] = now
+                else:
+                    # 速度达到限速值：清零连续低速计时
+                    slow_map.pop(torrent_hash, None)
+        # 清理已不在下载器中的种子状态
+        for state in (
+            self._limited_hashes,
+            self._restore_hashes,
+            self._canceled_hashes,
+            self._limited_times,
+            self._slow_since,
+            self._complete_slow_since,
+        ):
+            mapping = state.get(service_name)
+            if not mapping:
+                continue
+            for key in [key for key in mapping if key not in current_hashes]:
+                mapping.pop(key, None)
 
     def _apply_limits(
         self,
@@ -732,6 +783,8 @@ class QbUploadLimiter(_PluginBase):
                     failed += 1
                     continue
                 limited_hashes.add(torrent_hash)
+                # 登记到待恢复集合：即使后续取消监控，停用/卸载时也能恢复不限速
+                self._restore_hashes.setdefault(service_name, set()).add(torrent_hash)
                 # 记录本次限速时间，用于「限速后超时」计时
                 self._limited_times.setdefault(service_name, {})[torrent_hash] = now
                 new_limited += 1
@@ -992,6 +1045,30 @@ class QbUploadLimiter(_PluginBase):
             return 0.0
 
     @staticmethod
+    def _torrent_completed(torrent: Any, downloader_type: str) -> bool:
+        """
+        判断种子是否已下载完成。
+
+        qBittorrent 使用 progress / completion_on，Transmission 使用 percentDone / doneDate。
+        """
+        if downloader_type == "qbittorrent":
+            if not isinstance(torrent, dict):
+                return False
+            try:
+                if float(torrent.get("progress") or 0) >= 1:
+                    return True
+            except (TypeError, ValueError):
+                pass
+            return bool(QbUploadLimiter._torrent_completion_time(torrent, downloader_type))
+        try:
+            percent = getattr(torrent, "percentDone", None)
+            if percent is not None:
+                return float(percent) >= 1
+        except (TypeError, ValueError):
+            pass
+        return bool(QbUploadLimiter._torrent_completion_time(torrent, downloader_type))
+
+    @staticmethod
     def _torrent_completion_time(torrent: Any, downloader_type: str) -> int:
         """
         获取种子下载完成时间（Unix 时间戳，秒），未完成时为 0。
@@ -1016,24 +1093,24 @@ class QbUploadLimiter(_PluginBase):
         self, service_name: str, torrent: Any, downloader_type: str, torrent_hash: str, limit: int, now: float
     ) -> bool:
         """
-        判断种子是否应因「下载完成后超时仍达不到限速值」而取消监控。
+        判断种子是否应因「下载完成后监控超时」而取消监控。
 
-        规则：种子下载完成后，若在设定秒数内上传速度始终达不到限速值，则取消监控。
-        - 上传速度曾达到限速值（或本轮已达到）的种子不会被取消；
+        规则：种子下载完成后，插件持续监控其上传速度；上传速度持续低于限速值
+        达到设定秒数时取消监控（速度回升到限速值即重新计时）。
         - 尚未下载完成的种子不参与判断。
         """
-        completion_ts = self._torrent_completion_time(torrent, downloader_type)
-        if not completion_ts:
+        if not self._torrent_completed(torrent, downloader_type):
             return False
-        speed_bps = self._torrent_upload_speed(torrent, downloader_type)
-        if speed_bps >= limit * 1024:
-            # 上传速度已达到限速值，标记为达标，不再因本规则取消
-            self._speed_ok.setdefault(service_name, {})[torrent_hash] = True
+        # 速度已达到限速值：清零连续低速计时，不取消
+        if self._torrent_upload_speed(torrent, downloader_type) >= limit * 1024:
+            self._complete_slow_since.get(service_name, {}).pop(torrent_hash, None)
             return False
-        if self._speed_ok.get(service_name, {}).get(torrent_hash):
+        # 连续低速计时：达到设定秒数才取消监控
+        slow_since = self._complete_slow_since.get(service_name, {}).get(torrent_hash)
+        if slow_since is None:
+            self._complete_slow_since.setdefault(service_name, {})[torrent_hash] = now
             return False
-        # 下载完成已超过设定秒数，且上传速度仍未达到限速值
-        return now - completion_ts >= self._complete_timeout
+        return now - slow_since >= self._complete_timeout
 
     def _check_limit_timeout(
         self, service_name: str, torrent: Any, downloader_type: str, torrent_hash: str, limit: int, now: float
@@ -1063,13 +1140,14 @@ class QbUploadLimiter(_PluginBase):
         """
         取消对单个种子的监控：移出限速记录并清理计时状态，后续轮询不再设置限速。
 
-        下载器中的限速值保持现状，插件不再重复设置。
+        下载器中的限速值保持现状，插件不再重复设置；但该种子仍保留在待恢复集合中，
+        停用/卸载插件时同样会恢复为不限速。
         """
         self._limited_hashes.get(service_name, set()).discard(torrent_hash)
         self._canceled_hashes.setdefault(service_name, set()).add(torrent_hash)
         self._limited_times.get(service_name, {}).pop(torrent_hash, None)
         self._slow_since.get(service_name, {}).pop(torrent_hash, None)
-        self._speed_ok.get(service_name, {}).pop(torrent_hash, None)
+        self._complete_slow_since.get(service_name, {}).pop(torrent_hash, None)
         logger.info(f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_name}] 已取消监控（{reason}），不再设置限速")
 
     # ---------------------------------------------------------------- 通知
@@ -1171,20 +1249,22 @@ class QbUploadLimiter(_PluginBase):
         """
         将本插件限速过的种子恢复为不限速。
 
-        用于停用/卸载插件时调用，保证不残留限速状态。
+        以待恢复集合为准（含已取消监控但仍限速的种子），用于停用/卸载插件时调用，
+        保证不残留任何本插件设置过的限速状态。
         """
         services = self._get_services(downloaders)
         if not services:
             return
         for service_name, service_info in services.items():
             downloader = service_info.instance
-            hashes = self._limited_hashes.get(service_name) or set()
+            hashes = self._restore_hashes.get(service_name) or set()
             for torrent_hash in hashes:
                 try:
                     downloader.change_torrent(hash_string=torrent_hash, upload_limit=0)
                     logger.info(f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_hash}] 已恢复不限速")
                 except Exception as err:
                     logger.error(f"{self.LOG_TAG}[{service_name}] 恢复种子 [{torrent_hash}] 上传限速失败：{err}")
+            self._restore_hashes[service_name] = set()
             self._limited_hashes[service_name] = set()
 
     def _start_scheduler(self):
