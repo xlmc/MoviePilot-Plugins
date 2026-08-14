@@ -39,7 +39,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.27"
+    plugin_version = "1.2.28"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -73,7 +73,8 @@ class QbUploadLimiter(_PluginBase):
     # 停用/卸载后兜底恢复重试的调度器与已重试次数：恢复失败项在下载器重连后自动重试
     _retry_scheduler = None
     _retry_attempts = 0
-    # 兜底恢复重试的最大次数（每 60 秒重试一次，全部成功或达到上限后自动停止）
+    # 兜底恢复重试的报告间隔（每 60 秒重试一次，累计达到该次数输出一次告警；
+    # 任务持续运行直到全部恢复成功，不因下载器长期离线而提前终止）
     _MAX_RESTORE_RETRY = 60
     # 已被本插件限速且仍受监控的种子：{下载器名称: {种子Hash}}
     _limited_hashes: Dict[str, set] = {}
@@ -115,9 +116,10 @@ class QbUploadLimiter(_PluginBase):
         config = config or {}
         self._enabled = bool(config.get("enabled"))
         # 重新启用插件时停止停用期间运行的兜底恢复重试任务（恢复失败的记录仍保留，
-        # 随本轮轮询或保存配置继续处理）
+        # 随本轮轮询或保存配置继续处理）；wait=True 等待在途重试任务结束，
+        # 避免其恢复流程与立即执行的 apply_limit 并发撤销刚重新应用的限速
         if self._enabled:
-            self._stop_restore_retry()
+            self._stop_restore_retry(wait=True)
         self._onlyonce = bool(config.get("onlyonce"))
         self._notify_channel = self._normalize_channels(config.get("notify_channel"))
         self._share_ratio = max(self._to_int(config.get("share_ratio"), 1), 1)
@@ -1222,8 +1224,9 @@ class QbUploadLimiter(_PluginBase):
             if not self._torrent_current_limit(torrent, downloader_type, limit):
                 # 外部改回非目标限速：全部超时计时状态重新起算，
                 # 低速计时同样不沿用旧时长，避免提前取消监控
-                self._limited_times.get(service_name, {})[torrent_hash] = now
-                self._slow_since.get(service_name, {})[torrent_hash] = now
+                # （setdefault 确保下载器首次出现时计时写入真实字典而非临时副本）
+                self._limited_times.setdefault(service_name, {})[torrent_hash] = now
+                self._slow_since.setdefault(service_name, {})[torrent_hash] = now
                 limit_time = now
             if now - limit_time >= self._limit_timeout:
                 return True
@@ -1486,12 +1489,18 @@ class QbUploadLimiter(_PluginBase):
         except Exception as err:
             logger.error(f"{self.LOG_TAG}启动兜底恢复重试任务失败：{err}")
 
-    def _stop_restore_retry(self):
-        """停止兜底恢复重试任务。"""
+    def _stop_restore_retry(self, wait: bool = False):
+        """
+        停止兜底恢复重试任务。
+
+        :param wait: 是否等待正在执行的重试任务结束；重新启用插件时传 True，
+                     避免在途任务与新一轮限速/恢复流程并发竞态（任务自身停止时
+                     必须传 False，否则会等待自己造成死锁）
+        """
         try:
             if getattr(self, "_retry_scheduler", None):
                 if self._retry_scheduler.running:
-                    self._retry_scheduler.shutdown(wait=False)
+                    self._retry_scheduler.shutdown(wait=wait)
                 self._retry_scheduler = None
             self._retry_attempts = 0
         except Exception as err:
