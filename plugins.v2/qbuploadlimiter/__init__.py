@@ -7,7 +7,7 @@ QB上传限速插件（MoviePilot v2/v3）。
 3. 支持按站点筛选：勾选站点时仅处理所选站点下载的种子，未勾选时处理全部种子；
 4. 停用或卸载插件时，自动将本插件限速过的种子恢复为不限速；
 5. 限速通知支持多选 MoviePilot 已启用通知渠道，测试通知仅首次发送；
-6. 支持监控超时取消：下载完成后达不到限速值、或限速后持续超时/速度低于限速值 80% 时，取消监控不再设置限速。
+6. 支持监控超时取消：下载完成后达不到限速值、或限速后持续超时/速度低于限速值 80% 时，取消监控并立即恢复该种子不限速。
 """
 
 import datetime
@@ -39,7 +39,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.20"
+    plugin_version = "1.2.21"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -437,7 +437,7 @@ class QbUploadLimiter(_PluginBase):
                                             "min": 0,
                                             "step": 1,
                                             "hide-spin-buttons": True,
-                                            "hint": "种子下载完成后，插件持续监控其上传速度；上传速度持续低于限速值达到设定秒数时，取消监控，不再设置限速",
+                                            "hint": "种子下载完成后，插件持续监控其上传速度；上传速度持续低于限速值达到设定秒数时，取消监控并立即恢复该种子不限速",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -457,7 +457,7 @@ class QbUploadLimiter(_PluginBase):
                                             "min": 0,
                                             "step": 1,
                                             "hide-spin-buttons": True,
-                                            "hint": "种子被限速后，持续限速或上传速度低于限速值 80% 达到设定秒数时，取消监控，不再设置限速",
+                                            "hint": "种子被限速后，持续限速或上传速度低于限速值 80% 达到设定秒数时，取消监控并立即恢复该种子不限速",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -738,9 +738,9 @@ class QbUploadLimiter(_PluginBase):
 
         监控超时取消机制（对应配置项为 0 时关闭）：
         - 下载完成后超时：种子下载完成后，若在设定秒数内上传速度始终达不到限速值，
-          取消监控，不再设置限速；
+          取消监控并立即恢复该种子不限速；
         - 限速后超时：种子被限速后，持续限速或上传速度低于限速值 80% 达到设定秒数时，
-          取消监控，不再设置限速。
+          取消监控并立即恢复该种子不限速。
         """
         new_limited = already = failed = canceled = 0
         limited_hashes = self._limited_hashes.setdefault(service_name, set())
@@ -762,7 +762,7 @@ class QbUploadLimiter(_PluginBase):
                 if self._limit_timeout > 0 and limit > 0 and self._check_limit_timeout(
                     service_name, torrent, downloader_type, torrent_hash, limit, now
                 ):
-                    self._cancel_monitoring(service_name, torrent_hash, torrent_name, reason="限速后超时")
+                    self._cancel_monitoring(service_name, torrent_hash, torrent_name, reason="限速后超时", downloader=downloader)
                     canceled += 1
                     continue
                 # 当前限速已是目标值：计入「已满足」，避免重复调用下载器接口
@@ -774,7 +774,7 @@ class QbUploadLimiter(_PluginBase):
                 service_name, torrent, downloader_type, torrent_hash, limit, now
             ):
                 # 未限速的达标种子：下载完成后超时仍达不到限速值，取消监控
-                self._cancel_monitoring(service_name, torrent_hash, torrent_name, reason="下载完成后达不到限速值")
+                self._cancel_monitoring(service_name, torrent_hash, torrent_name, reason="下载完成后达不到限速值", downloader=downloader)
                 canceled += 1
                 continue
 
@@ -1136,18 +1136,30 @@ class QbUploadLimiter(_PluginBase):
             self._slow_since.get(service_name, {}).pop(torrent_hash, None)
         return False
 
-    def _cancel_monitoring(self, service_name: str, torrent_hash: str, torrent_name: str, reason: str):
+    def _cancel_monitoring(
+        self, service_name: str, torrent_hash: str, torrent_name: str, reason: str, downloader: Any = None
+    ):
         """
         取消对单个种子的监控：移出限速记录并清理计时状态，后续轮询不再设置限速。
 
-        下载器中的限速值保持现状，插件不再重复设置；但该种子仍保留在待恢复集合中，
-        停用/卸载插件时同样会恢复为不限速。
+        - 若该种子此前被本插件限速过（在待恢复集合中），取消监控的同时立即恢复为不限速，
+          并从待恢复集合移除，此后插件不再干预该种子（qB 后续如何限速与插件无关）；
+        - 若恢复失败，则保留在待恢复集合中，停用/卸载插件时仍会再次尝试恢复。
         """
         self._limited_hashes.get(service_name, set()).discard(torrent_hash)
         self._canceled_hashes.setdefault(service_name, set()).add(torrent_hash)
         self._limited_times.get(service_name, {}).pop(torrent_hash, None)
         self._slow_since.get(service_name, {}).pop(torrent_hash, None)
         self._complete_slow_since.get(service_name, {}).pop(torrent_hash, None)
+        # 本插件限速过的种子：取消监控时立即恢复不限速
+        if downloader is not None and torrent_hash in self._restore_hashes.get(service_name, set()):
+            try:
+                downloader.change_torrent(hash_string=torrent_hash, upload_limit=0)
+                self._restore_hashes.get(service_name, set()).discard(torrent_hash)
+                logger.info(f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_name}] 已取消监控并恢复不限速（{reason}）")
+                return
+            except Exception as err:
+                logger.error(f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_name}] 取消监控时恢复不限速失败：{err}")
         logger.info(f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_name}] 已取消监控（{reason}），不再设置限速")
 
     # ---------------------------------------------------------------- 通知
