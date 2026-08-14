@@ -39,7 +39,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.25"
+    plugin_version = "1.2.26"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -70,6 +70,11 @@ class QbUploadLimiter(_PluginBase):
 
     _scheduler = None
     _last_result = None
+    # 停用/卸载后兜底恢复重试的调度器与已重试次数：恢复失败项在下载器重连后自动重试
+    _retry_scheduler = None
+    _retry_attempts = 0
+    # 兜底恢复重试的最大次数（每 60 秒重试一次，全部成功或达到上限后自动停止）
+    _MAX_RESTORE_RETRY = 60
     # 已被本插件限速且仍受监控的种子：{下载器名称: {种子Hash}}
     _limited_hashes: Dict[str, set] = {}
     # 本插件本次会话中设置过限速、停用/卸载时必须恢复的种子：{下载器名称: {种子Hash}}
@@ -109,6 +114,10 @@ class QbUploadLimiter(_PluginBase):
 
         config = config or {}
         self._enabled = bool(config.get("enabled"))
+        # 重新启用插件时停止停用期间运行的兜底恢复重试任务（恢复失败的记录仍保留，
+        # 随本轮轮询或保存配置继续处理）
+        if self._enabled:
+            self._stop_restore_retry()
         self._onlyonce = bool(config.get("onlyonce"))
         self._notify_channel = self._normalize_channels(config.get("notify_channel"))
         self._share_ratio = max(self._to_int(config.get("share_ratio"), 1), 1)
@@ -184,6 +193,10 @@ class QbUploadLimiter(_PluginBase):
         # 持久化待恢复/已取消监控记录（恢复失败项保留，已取消项不丢失）
         self._save_set_map(self._RESTORE_DATA_KEY, self._restore_hashes)
         self._save_set_map(self._CANCELED_DATA_KEY, self._canceled_hashes)
+        # 停用状态下仍有待恢复记录时，启动兜底恢复重试任务：下载器短暂离线导致的
+        # 恢复失败，在下载器重连后自动恢复不限速，无需重新启用插件
+        if not self._enabled:
+            self._start_restore_retry()
 
     def stop_service(self):
         """
@@ -198,6 +211,9 @@ class QbUploadLimiter(_PluginBase):
         # 持久化恢复结果：恢复失败项保留，下次停用/卸载时继续重试
         self._save_set_map(self._RESTORE_DATA_KEY, self._restore_hashes)
         self._save_set_map(self._CANCELED_DATA_KEY, self._canceled_hashes)
+        # 仍有待恢复记录时启动兜底恢复重试任务：下载器短暂离线导致的恢复失败，
+        # 在下载器重连后自动恢复不限速，无需再次触发停止流程
+        self._start_restore_retry()
 
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
@@ -614,10 +630,12 @@ class QbUploadLimiter(_PluginBase):
             downloader_type = getattr(service_info, "type", "")
             try:
                 torrents, error = downloader.get_torrents()
-                if error or not torrents:
+                if error:
                     failed_names.append(service_name)
                     logger.warning(f"{self.LOG_TAG}获取下载器 [{service_name}] 种子列表失败")
                     continue
+                # 空列表是下载器中没有任何种子的合法成功结果，不是获取失败
+                torrents = torrents or []
 
                 now = time.time()
                 # 刷新已完成种子的监控计时与速度达标记录，并清理已不存在的种子状态
@@ -676,6 +694,9 @@ class QbUploadLimiter(_PluginBase):
                     channel=channel,
                     site_cache=site_cache,
                 )
+                # 兜底重试「已取消监控但恢复失败」的种子：下载器短暂离线导致的
+                # 恢复失败，在下载器恢复后由每轮检测顺带重试，无需等待停用/卸载
+                self._retry_stuck_restores(service_name, downloader)
                 summary_lines.append(
                     f"{service_name}：达标 {len(matched)} 个，新限速 {new_limited} 个，已满足 {already} 个，失败 {failed} 个，取消监控 {canceled + timeout_canceled} 个"
                 )
@@ -1112,18 +1133,23 @@ class QbUploadLimiter(_PluginBase):
         if downloader_type == "qbittorrent":
             if not isinstance(torrent, dict):
                 return False
+            progress = torrent.get("progress")
+            if progress is not None:
+                try:
+                    # 当前进度明确可读时以进度为准：缺文件、重新校验或扩展下载导致
+                    # 进度回退（<1）时，即使 completion_on 仍为正数也视为未完成
+                    return float(progress) >= 1
+                except (TypeError, ValueError):
+                    pass
+            # 进度字段缺失或不可解析时才回退到历史完成时间
+            return QbUploadLimiter._torrent_completion_time(torrent, downloader_type) > 0
+        percent = getattr(torrent, "percentDone", None)
+        if percent is not None:
             try:
-                if float(torrent.get("progress") or 0) >= 1:
-                    return True
+                # 当前进度明确可读时以进度为准，进度回退不再回退到历史完成时间
+                return float(percent) >= 1
             except (TypeError, ValueError):
                 pass
-            return QbUploadLimiter._torrent_completion_time(torrent, downloader_type) > 0
-        try:
-            percent = getattr(torrent, "percentDone", None)
-            if percent is not None:
-                return float(percent) >= 1
-        except (TypeError, ValueError):
-            pass
         return QbUploadLimiter._torrent_completion_time(torrent, downloader_type) > 0
 
     @staticmethod
@@ -1181,10 +1207,16 @@ class QbUploadLimiter(_PluginBase):
 
         规则：种子被限速后，持续限速或上传速度低于限速值 80% 达到设定秒数时取消监控。
         """
-        # 持续限速计时：从本次设置限速起算
+        # 持续限速计时：从本次设置限速起算，仅当种子当前仍处于目标限速时有效。
+        # 种子被手动或其他插件改回非目标限速时重新计时，避免沿用旧时间戳误判超时，
+        # 让后续流程优先重新应用本插件限速而不是直接取消监控
         limit_time = self._limited_times.get(service_name, {}).get(torrent_hash)
-        if limit_time and now - limit_time >= self._limit_timeout:
-            return True
+        if limit_time:
+            if not self._torrent_current_limit(torrent, downloader_type, limit):
+                self._limited_times.get(service_name, {})[torrent_hash] = now
+                limit_time = now
+            if now - limit_time >= self._limit_timeout:
+                return True
         # 上传速度低于限速值 80% 的连续时长计时
         speed_bps = self._torrent_upload_speed(torrent, downloader_type)
         if speed_bps < limit * 1024 * 0.8:
@@ -1414,6 +1446,96 @@ class QbUploadLimiter(_PluginBase):
                 self._scheduler = None
         except Exception as err:
             logger.error(f"{self.LOG_TAG}停止定时任务失败：{err}")
+
+    def _start_restore_retry(self):
+        """
+        存在待恢复记录时启动兜底恢复重试任务（停用/卸载状态下的生命周期保障）。
+
+        停用/卸载时若下载器短暂离线导致恢复失败，记录保留且不依赖再次触发停止流程；
+        下载器重连后，该任务会自动将仍受限速的种子恢复为不限速。
+        """
+        try:
+            if getattr(self, "_retry_scheduler", None) and self._retry_scheduler.running:
+                return
+            if not any(self._restore_hashes.values()):
+                return
+            self._retry_attempts = 0
+            self._retry_scheduler = BackgroundScheduler(timezone=settings.TZ)
+            self._retry_scheduler.add_job(
+                func=self._restore_retry_job,
+                trigger="interval",
+                seconds=60,
+                max_instances=1,
+                name="QB上传限速-兜底恢复",
+            )
+            self._retry_scheduler.start()
+            logger.info(
+                f"{self.LOG_TAG}存在 {sum(len(v) for v in self._restore_hashes.values())} 个待恢复种子，"
+                "已启动兜底恢复重试任务"
+            )
+        except Exception as err:
+            logger.error(f"{self.LOG_TAG}启动兜底恢复重试任务失败：{err}")
+
+    def _stop_restore_retry(self):
+        """停止兜底恢复重试任务。"""
+        try:
+            if getattr(self, "_retry_scheduler", None):
+                if self._retry_scheduler.running:
+                    self._retry_scheduler.shutdown(wait=False)
+                self._retry_scheduler = None
+            self._retry_attempts = 0
+        except Exception as err:
+            logger.error(f"{self.LOG_TAG}停止兜底恢复重试任务失败：{err}")
+
+    def _restore_retry_job(self):
+        """
+        兜底恢复重试任务：每轮尝试恢复待恢复记录。
+
+        全部恢复成功或达到最大重试次数后自动停止；每轮持久化结果，
+        重启插件后仍会继续重试，直到恢复成功或用户介入。
+        """
+        try:
+            self._restore_limits()
+        except Exception as err:
+            logger.error(f"{self.LOG_TAG}兜底恢复上传不限速失败：{err}")
+        # 每轮持久化恢复结果：恢复失败项保留，重启后继续重试
+        self._save_set_map(self._RESTORE_DATA_KEY, self._restore_hashes)
+        if not any(self._restore_hashes.values()):
+            self._stop_restore_retry()
+            return
+        self._retry_attempts += 1
+        if self._retry_attempts >= self._MAX_RESTORE_RETRY:
+            logger.error(
+                f"{self.LOG_TAG}待恢复种子仍有限速未恢复（已重试 {self._retry_attempts} 次），"
+                "请检查下载器连接后重新启用插件，或手动恢复种子上传限速"
+            )
+            self._stop_restore_retry()
+
+    def _retry_stuck_restores(self, service_name: str, downloader: Any):
+        """
+        启用状态下兜底重试「已取消监控但恢复失败」的种子恢复不限速。
+
+        仅处理待恢复集合中未被本插件继续限速的种子（已取消监控项），
+        避免与正在限速的种子冲突；下载器短暂离线导致的恢复失败，
+        在下载器恢复后由每轮检测顺带重试，无需等待停用/卸载。
+        """
+        pending = set(self._restore_hashes.get(service_name) or set()) - set(
+            self._limited_hashes.get(service_name) or set()
+        )
+        if not pending:
+            return
+        succeeded = set()
+        for torrent_hash in pending:
+            try:
+                if not downloader.change_torrent(hash_string=torrent_hash, upload_limit=0):
+                    logger.error(f"{self.LOG_TAG}[{service_name}] 兜底恢复种子 [{torrent_hash}] 上传限速失败：下载器返回失败")
+                    continue
+                succeeded.add(torrent_hash)
+                logger.info(f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_hash}] 已兜底恢复不限速")
+            except Exception as err:
+                logger.error(f"{self.LOG_TAG}[{service_name}] 兜底恢复种子 [{torrent_hash}] 上传限速失败：{err}")
+        if succeeded:
+            self._restore_hashes.get(service_name, set()).difference_update(succeeded)
 
     # ---------------------------------------------------------------- 工具方法
 
