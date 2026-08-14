@@ -37,7 +37,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.15"
+    plugin_version = "1.2.16"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -184,7 +184,8 @@ class QbUploadLimiter(_PluginBase):
         """
         pass
 
-    # ---------------------------------------------------------------- 设置表单    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+    # ---------------------------------------------------------------- 设置表单
+    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """
         插件设置表单：
         第一行：启用插件 / 立即运行一次 / 发送通知（多选渠道）；
@@ -641,7 +642,8 @@ class QbUploadLimiter(_PluginBase):
                 logger.error(f"{self.LOG_TAG}[{service_name}] 设置种子 [{torrent_name}] 上传限速失败：{err}")
         return new_limited, already, failed
 
-    # ---------------------------------------------------------------- 站点识别    def _load_site_domains(self) -> Dict[str, str]:
+    # ---------------------------------------------------------------- 站点识别
+    def _load_site_domains(self) -> Dict[str, str]:
         """
         构建 站点域名(小写) -> 站点名称 映射，用于识别种子所属站点。
         """
@@ -865,7 +867,8 @@ class QbUploadLimiter(_PluginBase):
             return not upload_limited
         return upload_limited and upload_limit == limit_kb
 
-    # ---------------------------------------------------------------- 通知    def _send_limit_notify(self, site: str, torrent_name: str, limit: int, channels: List[str]) -> bool:
+    # ---------------------------------------------------------------- 通知
+    def _send_limit_notify(self, site: str, torrent_name: str, limit: int, channels: List[str]) -> bool:
         """
         发送单条限速通知：{站点}所下的{种子}已经限速{速度} KB/s，变量加粗；支持多个通知渠道。
 
