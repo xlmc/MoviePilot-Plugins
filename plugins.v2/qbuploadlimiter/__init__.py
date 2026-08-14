@@ -3,7 +3,7 @@ QB上传限速插件（MoviePilot v2/v3）。
 
 功能：
 1. 定时轮询已选下载器（qBittorrent / Transmission）中的种子；
-2. 种子分享率（上传量 / 下载量）达到设定阈值后，自动限制该种子上传速度为指定值（KB/s）；
+2. 种子分享率（上传量 / 下载量）达到设定阈值后，自动限制该种子上传速度为指定值（KB/s）；上传速度填 0 时不做限速处理；
 3. 支持按站点筛选：勾选站点时仅处理所选站点下载的种子，未勾选时处理全部种子；
 4. 停用或卸载插件时，自动将本插件限速过的种子恢复为不限速；
 5. 限速通知支持多选 MoviePilot 已启用通知渠道，测试通知仅首次发送；
@@ -39,7 +39,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.17"
+    plugin_version = "1.2.18"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -55,7 +55,7 @@ class QbUploadLimiter(_PluginBase):
     _notify_channel = []
     # 分享率阈值（正整数）
     _share_ratio = 1
-    # 上传限速 KB/s，0 表示不限速
+    # 上传速度 KB/s，0 表示分享率达到阈值后不做限速处理
     _upload_limit = 2000
     # 定时检测间隔（秒）
     _interval_seconds = 30
@@ -199,7 +199,7 @@ class QbUploadLimiter(_PluginBase):
         插件设置表单：
         第一行：启用插件 / 立即运行一次 / 发送通知（多选渠道）；
         第二行：下载器（多选）/ 站点（多选，按站点筛选）；
-        第三行：分享率阈值 / 上传限速 / 定时检测间隔；
+        第三行：分享率阈值 / 上传速度 / 定时检测间隔；
         第四行：下载完成后监控超时 / 限速后取消监控超时；
         第五行：功能说明。
         """
@@ -369,8 +369,8 @@ class QbUploadLimiter(_PluginBase):
                                         "component": "VTextField",
                                         "props": {
                                             "model": "upload_limit",
-                                            "label": "上传限速（KB/s）",
-                                            "placeholder": "例如 2000；0 表示不限速",
+                                            "label": "上传速度（KB/s）",
+                                            "placeholder": "例如 2000；0 表示达到阈值后不做限速处理",
                                             "type": "number",
                                             "min": 0,
                                             "step": 1,
@@ -458,7 +458,7 @@ class QbUploadLimiter(_PluginBase):
                                         "props": {
                                             "type": "info",
                                             "variant": "tonal",
-                                            "text": "本插件按分享率逐种子限速：种子分享率（上传量/下载量）达到设定的正整数阈值后，其上传速度将被限制为设定值（KB/s）。上传限速填 0 表示恢复该种子不限速。支持 qBittorrent 和 Transmission。",
+                                            "text": "本插件按分享率逐种子限速：种子分享率（上传量/下载量）达到设定的正整数阈值后，其上传速度将被限制为设定值（KB/s）。上传速度填 0 表示分享率达到阈值后不做限速处理；上传速度、检测间隔与两个监控超时均须为正整数（两个监控超时填 0 表示不启用对应功能）。支持 qBittorrent 和 Transmission。",
                                         },
                                     }
                                 ],
@@ -568,6 +568,10 @@ class QbUploadLimiter(_PluginBase):
 
         threshold = max(self._to_int(share_ratio, 1), 1)
         limit = max(self._to_int(upload_limit, 0), 0)
+        # 上传速度为 0：分享率达到阈值后不做限速处理
+        if limit == 0:
+            self._last_result = "上传速度为 0，分享率达到阈值后不做限速处理。"
+            return True
         # 站点筛选集合（None 表示不过滤）
         selected = self._selected_sites()
         summary_lines = []
@@ -1191,9 +1195,25 @@ class QbUploadLimiter(_PluginBase):
 
     @staticmethod
     def _to_int(value: Any, default: int = 0) -> int:
-        """安全转换整数，转换失败时返回默认值。"""
+        """
+        安全转换为整数：仅接受整数或整数字符串，拒绝小数与科学计数法，转换失败时返回默认值。
+
+        :param value: 待转换值（可为数字或字符串）
+        :param default: 转换失败时的默认值
+        """
+        if value is None or isinstance(value, bool):
+            return default
         try:
-            return int(float(value))
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                # 整数值的浮点（如 30.0）视为合法整数，非整数值拒绝
+                return int(value) if value.is_integer() else default
+            text = str(value).strip()
+            # 含小数点或科学计数法标记的字符串不是正整数
+            if not text or any(c in text for c in ".eE"):
+                return default
+            return int(text)
         except (TypeError, ValueError):
             return default
 
