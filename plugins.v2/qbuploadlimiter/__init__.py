@@ -39,7 +39,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "当 qBittorrent 中已下载的种子分享率达到设定阈值时，自动将该种子的上传速度限制为指定值（KB/s），支持多下载器、按站点筛选、定时检测和停用恢复。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.2.28"
+    plugin_version = "1.2.29"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -128,8 +128,8 @@ class QbUploadLimiter(_PluginBase):
         # 监控超时取消配置（秒），0 表示不启用
         self._complete_timeout = max(self._to_int(config.get("complete_timeout"), 0), 0)
         self._limit_timeout = max(self._to_int(config.get("limit_timeout"), 0), 0)
-        self._downloaders = config.get("downloaders") or []
-        self._sites = [str(site).strip() for site in (config.get("sites") or []) if str(site).strip()]
+        self._downloaders = self._normalize_config_list(config.get("downloaders"))
+        self._sites = self._normalize_config_list(config.get("sites"))
         # 站点映射（域名 -> 名称、名称小写 -> 名称）只构建一次，供本轮所有种子复用
         self._site_domains = self._load_site_domains()
         self._site_names = {name.lower(): name for name in self._site_domains.values() if name}
@@ -611,6 +611,10 @@ class QbUploadLimiter(_PluginBase):
         """
         services = self._get_services()
         if not services:
+            # 无可用下载器时也需兜底重试所有待恢复记录：下载器可能已从插件选择中
+            # 移除或短暂离线，重连后无需重新选择也能自动恢复不限速
+            self._retry_all_stuck_restores()
+            self._save_set_map(self._RESTORE_DATA_KEY, self._restore_hashes)
             self._last_result = "没有可用的 qBittorrent/Transmission 下载器，未执行限速。"
             return False
 
@@ -1575,6 +1579,29 @@ class QbUploadLimiter(_PluginBase):
             self._retry_stuck_restores(service_name, service_info.instance)
 
     # ---------------------------------------------------------------- 工具方法
+
+    @staticmethod
+    def _normalize_config_list(value: Any) -> List[str]:
+        """
+        将配置项规范化为去重后的字符串列表，兼容旧版单个字符串配置。
+
+        :param value: 配置项原始值（可为字符串或列表）
+        """
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw = [value]
+        else:
+            try:
+                raw = list(value)
+            except TypeError:
+                raw = [value]
+        items = []
+        for item in raw:
+            item = str(item or "").strip()
+            if item and item not in items:
+                items.append(item)
+        return items
 
     @staticmethod
     def _to_int(value: Any, default: int = 0) -> int:
