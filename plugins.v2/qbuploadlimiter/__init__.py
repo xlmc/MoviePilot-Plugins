@@ -45,7 +45,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.3.15"
+    plugin_version = "1.3.16"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -1026,9 +1026,12 @@ class QbUploadLimiter(_PluginBase):
                     )
                     if decisions:
                         ai_mode = True
-                        for torrent_hash, decision in decisions.items():
-                            if decision.get("action") == "limit" and decision.get("limit_kb", 0) > 0:
-                                ai_limits[torrent_hash] = float(decision["limit_kb"])
+                        ai_limits, ai_unlimit = self._build_ai_limits(
+                            service_name, downloader_type, eligible_torrents, decisions
+                        )
+                        if ai_unlimit:
+                            unlimit_count = self._apply_ai_unlimit(service_name, downloader, ai_unlimit)
+                            summary_lines.append(f"{service_name}：AI 复核解限 {unlimit_count} 个种子")
                         summary_lines.append(f"{service_name}：AI 智能限速生效（本轮决策 {len(decisions)} 个种子）")
                 matched = self._collect_matched_torrents(
                     torrents=eligible_torrents,
@@ -1140,7 +1143,7 @@ class QbUploadLimiter(_PluginBase):
                 continue
 
             # AI 智能限速模式：limit 决策限速、no_limit 尊重不限速、
-            # 无决策（限频期内新活跃、尚未评估）回退阈值规则兜底，避免「漏管」
+            # 已限速种子未要求调整时维持现状、无决策回退阈值规则兜底，避免「漏管」
             if ai_mode:
                 ai_value = (ai_limits or {}).get(torrent_hash)
                 if ai_value is not None:
@@ -1148,6 +1151,9 @@ class QbUploadLimiter(_PluginBase):
                     continue
                 ai_decision = self._ai_decisions.get(service_name, {}).get(torrent_hash)
                 if ai_decision and ai_decision.get("action") == "no_limit":
+                    continue
+                if torrent_hash in self._limited_hashes.get(service_name, set()):
+                    # 已限速种子：AI 未要求调整（防抖维持现状/本轮未评估），跳过不重新按阈值限速
                     continue
                 # 无决策：继续走下方阈值规则
 
@@ -1558,14 +1564,15 @@ class QbUploadLimiter(_PluginBase):
         """
         构造 AI 限速决策提示词。
 
-        :param items: 种子信息列表（index/hash/site/ratio/uploaded/downloaded/speed/window_upload）
+        :param items: 种子信息列表（index/hash/site/ratio/uploaded/downloaded/speed/window_upload/current_limit）
         :param site_lines: 站点账号分享率文本（站点名=分享率，每行一个）
         :param max_limit: 限速上限 KB/s
         """
         seed_lines = "\n".join(
             f"[{it['index']}] 站点={it['site'] or '未知'} | 种子分享率={it['ratio']:.2f} | "
             f"累计上传={it['uploaded']} | 累计下载={it['downloaded']} | "
-            f"当前上传速度={it['speed']} | 最近一轮上传增量={it['window_upload']}"
+            f"当前上传速度={it['speed']} | 最近一轮上传增量={it['window_upload']} | "
+            f"当前限速={it.get('current_limit', 0):g} KB/s（0=不限速）"
             for it in items
         )
         return (
@@ -1577,9 +1584,11 @@ class QbUploadLimiter(_PluginBase):
             "2. 站点账号分享率越高，说明该站上传指标越充足，该站种子可放心限速；"
             "站点分享率低（如低于 1.5）时该站种子应放宽，继续积攒上传量；\n"
             "3. 种子最近仍在上传（当前速度或窗口增量大于 0）才值得限速；\n"
-            f"4. 限速值单位为 KB/s，必须为正整数，且不超过上限 {max_limit}；"
+            "4. 对已限速的种子（当前限速>0），可据其最新分享率/活跃度调整限速值或改为 no_limit 解除限速；"
+            "仅当认为需要明显改变时才调整，避免无谓微调；\n"
+            f"5. 限速值单位为 KB/s，必须为正整数，且不超过上限 {max_limit}；"
             "action 为 no_limit 时表示不限速，limit_kb 填 0；\n"
-            "5. 严格只输出 JSON，不要输出任何其他文字，格式："
+            "6. 严格只输出 JSON，不要输出任何其他文字，格式："
             "{{\"results\": [{{\"index\": 序号, \"action\": \"limit\" 或 \"no_limit\", "
             "\"limit_kb\": 数值, \"reason\": \"一句话原因\"}}]}}，输入的每个种子都必须给出结果。\n"
             f"站点账号分享率：{site_lines}\n"
@@ -1589,7 +1598,8 @@ class QbUploadLimiter(_PluginBase):
     def _ai_evaluate(self, service_name: str, torrents: List[Any], downloader_type: str,
                      site_ratios: Dict[str, float], now: float) -> Dict[str, Dict[str, Any]]:
         """
-        对活跃且未限速的种子进行 AI 批量评估，返回本轮生效的决策 {种子Hash: 决策}。
+        对活跃的种子（含已限速种子，用于复核加限/减限/解限）进行 AI 批量评估，
+        返回本轮生效的决策 {种子Hash: 决策}。
 
         按 _ai_eval_interval 限频调用大模型：限频期内直接复用现有决策缓存；
         大模型调用失败/超时/输出解析失败时返回空字典（本轮回退常规阈值规则），
@@ -1597,12 +1607,11 @@ class QbUploadLimiter(_PluginBase):
         """
         decisions = self._ai_decisions.setdefault(service_name, {})
         canceled = self._canceled_hashes.get(service_name, set())
-        limited = self._limited_hashes.get(service_name, set())
         items: List[dict] = []
         index_map: Dict[int, str] = {}
         for torrent in torrents:
             torrent_hash = self._torrent_hash(torrent, downloader_type)
-            if not torrent_hash or torrent_hash in canceled or torrent_hash in limited:
+            if not torrent_hash or torrent_hash in canceled:
                 continue
             if not self._is_torrent_active(service_name, torrent, downloader_type, torrent_hash):
                 continue
@@ -1616,6 +1625,7 @@ class QbUploadLimiter(_PluginBase):
                 "downloaded": self._format_bytes(self._torrent_downloaded(torrent, downloader_type)),
                 "speed": f"{self._torrent_upload_speed(torrent, downloader_type) / 1024:.1f} KB/s",
                 "window_upload": self._format_bytes(self._window_upload_delta(service_name, torrent, downloader_type, torrent_hash)),
+                "current_limit": self._torrent_current_limit_kb(torrent, downloader_type),
             })
             index_map[index] = torrent_hash
         if not items:
@@ -1666,6 +1676,75 @@ class QbUploadLimiter(_PluginBase):
             decision["ts"] = now
             decisions[torrent_hash] = decision
         return parsed
+
+    def _build_ai_limits(
+        self,
+        service_name: str,
+        downloader_type: str,
+        torrents: List[Any],
+        decisions: Dict[str, dict],
+    ) -> Tuple[Dict[str, float], Set[str]]:
+        """
+        根据 AI 决策构建「限速映射」与「解限集合」。
+
+        - limit 决策：写入限速映射（KB/s）；对已限速种子做防抖——新值与当前值
+          差异 < 20% 时维持现状，避免每轮无谓微调；
+        - no_limit 决策：若该种子当前已限速，加入解限集合（由 _apply_ai_unlimit 恢复不限速）。
+        """
+        torrent_map = {self._torrent_hash(t, downloader_type): t for t in torrents}
+        limited = self._limited_hashes.get(service_name, set())
+        ai_limits: Dict[str, float] = {}
+        unlimit_hashes: Set[str] = set()
+        for torrent_hash, decision in decisions.items():
+            action = decision.get("action")
+            if action == "limit":
+                try:
+                    new_kb = float(decision.get("limit_kb") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if new_kb <= 0:
+                    continue
+                if torrent_hash in limited:
+                    current_kb = self._torrent_current_limit_kb(torrent_map.get(torrent_hash), downloader_type)
+                    if current_kb > 0 and abs(new_kb - current_kb) <= current_kb * 0.2:
+                        continue  # 差异 < 20%，维持现状
+                ai_limits[torrent_hash] = new_kb
+            elif action == "no_limit" and torrent_hash in limited:
+                unlimit_hashes.add(torrent_hash)
+        return ai_limits, unlimit_hashes
+
+    def _apply_ai_unlimit(
+        self,
+        service_name: str,
+        downloader: Any,
+        unlimit_hashes: Set[str],
+    ) -> int:
+        """
+        执行 AI 解限：将已限速种子恢复为不限速，并移出限速/待恢复记录。
+
+        与「取消监控」不同：解限不移入 canceled_hashes，种子后续仍可被 AI 重新评估并限速。
+        返回实际解限数量。
+        """
+        limited = self._limited_hashes.get(service_name, set())
+        restore = self._restore_hashes.get(service_name, set())
+        count = 0
+        for torrent_hash in unlimit_hashes:
+            if torrent_hash not in limited:
+                continue
+            try:
+                if not downloader.change_torrent(hash_string=torrent_hash, upload_limit=0):
+                    logger.warning(f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_hash}] AI 解限失败：下载器返回失败")
+                    continue
+            except Exception as err:
+                logger.error(f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_hash}] AI 解限失败：{err}")
+                continue
+            limited.discard(torrent_hash)
+            restore.discard(torrent_hash)
+            self._limited_times.get(service_name, {}).pop(torrent_hash, None)
+            self._slow_since.get(service_name, {}).pop(torrent_hash, None)
+            count += 1
+            logger.info(f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_hash}] AI 决策解限，已恢复不限速")
+        return count
 
     def _build_site_ratio_lines(self, site_ratios: Dict[str, float]) -> str:
         """将站点账号分享率（域名 -> 分享率）转换为站点名=分享率文本，供 AI 参考。"""
@@ -2018,6 +2097,31 @@ class QbUploadLimiter(_PluginBase):
                 return not upload_limited
             return upload_limited and upload_limit == int(float(limit_kb))
         return bool(self._limited_times.get(service_name, {}).get(torrent_hash))
+
+    @staticmethod
+    def _torrent_current_limit_kb(torrent: Any, downloader_type: str) -> float:
+        """
+        读取种子当前上传限速值（KB/s），0 表示不限速；读取失败返回 0。
+
+        qBittorrent 字段 up_limit 为字节/秒（除以 1024 得 KB/s）；
+        Transmission 字段 uploadLimit 为 KB/s（uploadLimited=False 表示不限速）。
+        """
+        if torrent is None:
+            return 0.0
+        if downloader_type == "qbittorrent":
+            if not isinstance(torrent, dict):
+                return 0.0
+            try:
+                return float(torrent.get("up_limit") or 0) / 1024
+            except (TypeError, ValueError):
+                return 0.0
+        # Transmission
+        try:
+            if not getattr(torrent, "uploadLimited", False):
+                return 0.0
+            return float(getattr(torrent, "uploadLimit", 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
 
     @staticmethod
     def _torrent_upload_speed(torrent: Any, downloader_type: str) -> float:
