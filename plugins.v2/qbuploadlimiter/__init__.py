@@ -45,7 +45,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.3.12"
+    plugin_version = "1.3.13"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -1027,6 +1027,7 @@ class QbUploadLimiter(_PluginBase):
                         summary_lines.append(f"{service_name}：AI 智能限速生效（本轮决策 {len(decisions)} 个种子）")
                 matched = self._collect_matched_torrents(
                     torrents=eligible_torrents,
+                    service_name=service_name,
                     downloader_type=downloader_type,
                     threshold=threshold,
                     selected=selected,
@@ -1052,6 +1053,10 @@ class QbUploadLimiter(_PluginBase):
                 # 并在运行日志输出各状态数量；未启用 AI 时保持原有逻辑
                 if self._ai_enabled:
                     self._refresh_seed_states(service_name, eligible_torrents, downloader_type, site_cache=site_cache)
+                    # 活跃度快照在 AI 评估与状态计算之后更新，保存本轮累计上传量，
+                    # 供下一轮 _is_torrent_active 计算窗口增量（顺序不可颠倒，
+                    # 否则本轮活跃判断比较的是「刚刷新」的当前值、恒为不活跃）
+                    self._refresh_activity_snapshots(service_name, eligible_torrents, downloader_type)
                     if self._seed_states.get(service_name):
                         state_counts = {}
                         for state in self._seed_states.get(service_name, {}).values():
@@ -1090,6 +1095,7 @@ class QbUploadLimiter(_PluginBase):
     def _collect_matched_torrents(
         self,
         torrents: List[Any],
+        service_name: str,
         downloader_type: str,
         threshold: float,
         selected: Optional[Set[str]],
@@ -1105,8 +1111,8 @@ class QbUploadLimiter(_PluginBase):
         （hash -> 站点），优先使用 MoviePilot 记录的权威站点信息。
         每个达标种子实际使用的阈值写入 threshold_cache，供日志准确显示。
 
-        AI 智能限速模式（ai_mode=True）：是否限速与限速值完全由大模型决策，
-        无 AI 决策的种子（休眠/判定不限速/尚未评估）一律跳过，不再走阈值规则。
+        AI 智能限速模式（ai_mode=True）：limit 决策按 AI 限速值限速；
+        no_limit 决策尊重不限速；无决策（限频期内新活跃、尚未评估）回退阈值规则兜底。
         """
         # 站点筛选或站点单独阈值至少启用一项时，才需要识别种子所属站点
         need_site = bool(selected or self._site_share_ratios)
@@ -1131,14 +1137,17 @@ class QbUploadLimiter(_PluginBase):
             if selected and (not site or site.lower() not in selected):
                 continue
 
-            # AI 智能限速模式：由大模型决策是否限速与限速值
+            # AI 智能限速模式：limit 决策限速、no_limit 尊重不限速、
+            # 无决策（限频期内新活跃、尚未评估）回退阈值规则兜底，避免「漏管」
             if ai_mode:
                 ai_value = (ai_limits or {}).get(torrent_hash)
-                if ai_value is None:
+                if ai_value is not None:
+                    matched.append(torrent)
                     continue
-                threshold_cache[torrent_hash] = int(ai_value)
-                matched.append(torrent)
-                continue
+                ai_decision = self._ai_decisions.get(service_name, {}).get(torrent_hash)
+                if ai_decision and ai_decision.get("action") == "no_limit":
+                    continue
+                # 无决策：继续走下方阈值规则
 
             # 已识别且配置了单独阈值的站点使用单独值，否则回退到全局阈值
             torrent_threshold = self._threshold_for_site(site, threshold)
@@ -1170,13 +1179,6 @@ class QbUploadLimiter(_PluginBase):
             if not torrent_hash:
                 continue
             current_hashes.add(torrent_hash)
-            # AI 智能限速启用时才维护已入库种子的活跃度快照（窗口增量判断的基础）；
-            # 未启用 AI 时保持原有逻辑，不维护任何 AI 相关状态
-            if (
-                self._ai_enabled
-                and (transferred_hashes is None or torrent_hash in transferred_hashes)
-            ):
-                self._refresh_activity_snapshot(service_name, torrent, downloader_type, torrent_hash)
             if (
                 self._complete_timeout > 0
                 and limit > 0
@@ -1294,10 +1296,15 @@ class QbUploadLimiter(_PluginBase):
                 # 记录本次限速时间，用于「限速后超时」计时
                 self._limited_times.setdefault(service_name, {})[torrent_hash] = now
                 new_limited += 1
-                logger.info(
-                    f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_name}] 分享率达到 {torrent_threshold:g}，"
-                    f"已限速 {self._format_limit(torrent_limit)}"
-                )
+                if ai_limits and torrent_hash in ai_limits:
+                    logger.info(
+                        f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_name}] AI 智能限速 {self._format_limit(torrent_limit)}"
+                    )
+                else:
+                    logger.info(
+                        f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_name}] 分享率达到 {torrent_threshold:g}，"
+                        f"已限速 {self._format_limit(torrent_limit)}"
+                    )
                 # 仅首次新限速的种子逐条通知；已认领种子被外部改回后重新应用限速
                 # 不再重复发送通知，避免每轮检测重复推送
                 if channels and not owned:
@@ -1350,6 +1357,19 @@ class QbUploadLimiter(_PluginBase):
         """
         uploaded = self._torrent_uploaded(torrent, downloader_type)
         self._uploaded_snapshots.setdefault(service_name, {})[torrent_hash] = uploaded
+
+    def _refresh_activity_snapshots(self, service_name: str, torrents: List[Any], downloader_type: str):
+        """
+        批量更新已入库种子的活跃度快照（在本轮 AI 评估与状态计算之后调用）。
+
+        快照保存的是「本轮」累计上传量，供下一轮 `_is_torrent_active` 与上一轮
+        比较计算窗口增量；必须在活跃判断完成之后调用，否则当前值与快照相等，
+        增量恒为 0、活跃判断失效。
+        """
+        for torrent in torrents:
+            torrent_hash = self._torrent_hash(torrent, downloader_type)
+            if torrent_hash:
+                self._refresh_activity_snapshot(service_name, torrent, downloader_type, torrent_hash)
 
     def _is_torrent_active(self, service_name: str, torrent: Any, downloader_type: str, torrent_hash: str) -> bool:
         """
@@ -1598,9 +1618,22 @@ class QbUploadLimiter(_PluginBase):
         # 系统设置未配置大模型：不再尝试调用，直接回退常规阈值规则
         if self._ai_config_missing:
             return {}
-        # 限频：距上次大模型调用不足间隔时不调用，直接返回缓存中仍有效的决策
+        # 限频：距上次大模型调用不足间隔时不调用，直接返回缓存中仍有效的决策；
+        # 丢弃已过期（超过一个评估间隔未刷新）的旧决策，避免种子长时间休眠后
+        # 重新活跃时命中陈旧结论（此类种子会回退阈值规则兜底，等下次评估刷新）
         if now - self._last_ai_eval_at < self._ai_eval_interval:
-            return {h: d for h, d in decisions.items() if h in index_map.values()}
+            fresh: Dict[str, dict] = {}
+            for torrent_hash, decision in decisions.items():
+                if torrent_hash not in index_map.values():
+                    continue
+                try:
+                    ts = float(decision.get("ts") or 0)
+                except (TypeError, ValueError):
+                    ts = 0.0
+                if now - ts >= self._ai_eval_interval:
+                    continue
+                fresh[torrent_hash] = decision
+            return fresh
         max_limit = self._ai_max_limit if self._ai_max_limit > 0 else self._upload_limit
         if max_limit <= 0:
             return {}
