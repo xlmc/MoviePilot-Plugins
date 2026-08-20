@@ -45,7 +45,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.3.14"
+    plugin_version = "1.3.15"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -124,7 +124,7 @@ class QbUploadLimiter(_PluginBase):
     # 每轮检测后更新，get_page 渲染时使用，避免页面请求时再访问下载器
     _seed_page_snapshot: Dict[str, Dict[str, dict]] = {}
     # 种子状态常量
-    _STATE_PENDING = "pending"      # 待评估：已入库+已完成+活跃，等待 AI/规则决策
+    _STATE_PENDING = "pending"      # 待评估：已入库+活跃，等待 AI/规则决策
     _STATE_LIMITED = "limited"      # 限速中：已被本插件限速且仍受监控
     _STATE_RECOVERING = "recovering"  # 恢复中：超时放掉正在恢复不限速（含待重试）
     _STATE_NO_LIMIT = "no_limit"    # AI 不限速：AI 已评估且判定当前不限速
@@ -1131,9 +1131,6 @@ class QbUploadLimiter(_PluginBase):
             torrent_hash = self._torrent_hash(torrent, downloader_type)
             if not torrent_hash:
                 continue
-            # 只处理已下载完成的种子，下载中的种子即使分享率达标也不限速
-            if not self._torrent_completed(torrent, downloader_type):
-                continue
 
             site = ""
             if need_site:
@@ -1398,12 +1395,13 @@ class QbUploadLimiter(_PluginBase):
     def _refresh_seed_states(self, service_name: str, eligible_torrents: List[Any], downloader_type: str,
                              site_cache: Optional[Dict[str, str]] = None):
         """
-        推导并登记种子状态机（pending / limited / recovering / idle），清理已移除种子。
+        推导并登记种子状态机（pending / limited / recovering / no_limit / idle），清理已移除种子。
 
         状态完全由现有机制推导：
         - 已取消监控 -> idle（忽略，插件不再干预）；
         - 已被本插件限速 -> limited（限速中）；
         - 有待恢复记录 -> recovering（恢复中，含恢复失败待重试）；
+        - AI 判定不限速 -> no_limit（AI 不限速）；
         - 活跃 -> pending（待评估）；休眠 -> idle。
 
         同时维护种子状态页快照（名称/站点/状态/限速值/AI 决策原因），供 get_page 渲染。
@@ -1605,8 +1603,6 @@ class QbUploadLimiter(_PluginBase):
         for torrent in torrents:
             torrent_hash = self._torrent_hash(torrent, downloader_type)
             if not torrent_hash or torrent_hash in canceled or torrent_hash in limited:
-                continue
-            if not self._torrent_completed(torrent, downloader_type):
                 continue
             if not self._is_torrent_active(service_name, torrent, downloader_type, torrent_hash):
                 continue
