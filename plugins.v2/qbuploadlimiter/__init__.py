@@ -45,7 +45,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.3.13"
+    plugin_version = "1.3.14"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -110,8 +110,10 @@ class QbUploadLimiter(_PluginBase):
     _uploaded_snapshots: Dict[str, Dict[str, float]] = {}
     # 上次大模型调用时间戳（限频）
     _last_ai_eval_at = 0.0
-    # 系统设置未配置大模型标记：置位后本会话不再尝试调用大模型，避免每轮刷错误日志
+    # 系统设置未配置大模型标记：置位后降频重试探测（而非永久放弃），补配置后自动恢复
     _ai_config_missing = False
+    # 下次重试探测大模型配置的时间戳（配置缺失时降频重试，避免每轮刷错误日志）
+    _ai_config_retry_at = 0.0
     # AI 智能限速已成功生效标记：大模型自检通过或至少一次评估调用成功后置位，
     # 用于详情页（种子状态页）的显隐——未成功开启 AI 前保持点击卡片直接进设置
     _ai_active = False
@@ -125,6 +127,7 @@ class QbUploadLimiter(_PluginBase):
     _STATE_PENDING = "pending"      # 待评估：已入库+已完成+活跃，等待 AI/规则决策
     _STATE_LIMITED = "limited"      # 限速中：已被本插件限速且仍受监控
     _STATE_RECOVERING = "recovering"  # 恢复中：超时放掉正在恢复不限速（含待重试）
+    _STATE_NO_LIMIT = "no_limit"    # AI 不限速：AI 已评估且判定当前不限速
     _STATE_IDLE = "idle"            # 忽略：无上传流量或已放掉，插件零操作
 
     # 持久化数据键：跨会话保留待恢复限速种子 / 已取消监控种子
@@ -224,6 +227,7 @@ class QbUploadLimiter(_PluginBase):
         self._uploaded_snapshots = {}
         self._last_ai_eval_at = 0.0
         self._ai_config_missing = False
+        self._ai_config_retry_at = 0.0
         self._seed_page_snapshot = {}
         # 重新初始化后 AI 生效标记与决策缓存一并清零：详情页显隐跟随新一轮
         # 大模型调用结果重新判定，避免保存配置后出现「有页面无数据」或残留旧标记
@@ -303,6 +307,7 @@ class QbUploadLimiter(_PluginBase):
         "pending": "待评估",
         "limited": "限速中",
         "recovering": "恢复中",
+        "no_limit": "AI 不限速",
         "idle": "忽略",
     }
 
@@ -328,8 +333,8 @@ class QbUploadLimiter(_PluginBase):
                     "props": {"class": "text-center"},
                 }
             ]
-        # 状态排序：限速中 > 待评估 > 恢复中 > 忽略
-        order = {"limited": 0, "pending": 1, "recovering": 2, "idle": 3}
+        # 状态排序：限速中 > 待评估 > 恢复中 > AI 不限速 > 忽略
+        order = {"limited": 0, "pending": 1, "recovering": 2, "no_limit": 3, "idle": 4}
         rows.sort(key=lambda r: (order.get(r.get("state"), 9), r.get("service", "")))
         # 顶部状态统计卡片
         counts: Dict[str, int] = {}
@@ -337,7 +342,7 @@ class QbUploadLimiter(_PluginBase):
             label = self._STATE_LABELS.get(row.get("state"), row.get("state"))
             counts[label] = counts.get(label, 0) + 1
         header_cards = []
-        for label in ("待评估", "限速中", "恢复中", "忽略"):
+        for label in ("待评估", "限速中", "恢复中", "AI 不限速", "忽略"):
             header_cards.append(
                 {
                     "component": "VCol",
@@ -1064,7 +1069,7 @@ class QbUploadLimiter(_PluginBase):
                         summary_lines.append(
                             f"{service_name}：种子状态 待评估 {state_counts.get('pending', 0)} / "
                             f"限速中 {state_counts.get('limited', 0)} / 恢复中 {state_counts.get('recovering', 0)} / "
-                            f"忽略 {state_counts.get('idle', 0)}"
+                            f"AI 不限速 {state_counts.get('no_limit', 0)} / 忽略 {state_counts.get('idle', 0)}"
                         )
                 # 兜底重试「已取消监控但恢复失败」的种子：下载器短暂离线导致的
                 # 恢复失败，在下载器恢复后由每轮检测顺带重试，无需等待停用/卸载
@@ -1418,6 +1423,8 @@ class QbUploadLimiter(_PluginBase):
                 states[torrent_hash] = self._STATE_LIMITED
             elif torrent_hash in self._restore_hashes.get(service_name, set()):
                 states[torrent_hash] = self._STATE_RECOVERING
+            elif self._ai_decisions.get(service_name, {}).get(torrent_hash, {}).get("action") == "no_limit":
+                states[torrent_hash] = self._STATE_NO_LIMIT
             elif self._is_torrent_active(service_name, torrent, downloader_type, torrent_hash):
                 states[torrent_hash] = self._STATE_PENDING
             else:
@@ -1487,6 +1494,7 @@ class QbUploadLimiter(_PluginBase):
                 f"期间自动回退常规分享率阈值限速"
             )
             self._ai_config_missing = True
+            self._ai_active = False
             raise
         if llm is None:
             logger.warning(
@@ -1495,6 +1503,7 @@ class QbUploadLimiter(_PluginBase):
                 f"期间自动回退常规分享率阈值限速"
             )
             self._ai_config_missing = True
+            self._ai_active = False
             raise RuntimeError("系统设置未配置大模型")
         self._ai_config_missing = False
         response = llm.invoke(prompt, config={"configurable": {"timeout": timeout}})
@@ -1615,9 +1624,17 @@ class QbUploadLimiter(_PluginBase):
             index_map[index] = torrent_hash
         if not items:
             return {}
-        # 系统设置未配置大模型：不再尝试调用，直接回退常规阈值规则
+        # 系统设置未配置大模型：降频重试探测（补配置后无需重新保存插件即可自动恢复），
+        # 重试间隔内直接回退常规阈值规则，避免每轮刷错误日志
         if self._ai_config_missing:
-            return {}
+            if now < self._ai_config_retry_at:
+                return {}
+            self._ai_config_retry_at = now + self._ai_eval_interval
+            try:
+                self._ai_invoke("请只回复两个字：正常", timeout=60)
+                # 探测成功：_ai_invoke 内部已置 _ai_config_missing=False，继续正常评估
+            except Exception:
+                return {}
         # 限频：距上次大模型调用不足间隔时不调用，直接返回缓存中仍有效的决策；
         # 丢弃已过期（超过一个评估间隔未刷新）的旧决策，避免种子长时间休眠后
         # 重新活跃时命中陈旧结论（此类种子会回退阈值规则兜底，等下次评估刷新）
