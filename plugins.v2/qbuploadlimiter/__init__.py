@@ -45,7 +45,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.3.17"
+    plugin_version = "1.3.18"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "qbuploadlimiter_"
@@ -101,8 +101,8 @@ class QbUploadLimiter(_PluginBase):
     _ai_eval_interval = 3600
     # AI 限速上限（KB/s），0 表示使用配置的上传速度作为上限
     _ai_max_limit = 0
-    # AI 账号分享率门槛：站点账号分享率达到该值才对该站种子生效 AI 决策，0 表示不启用
-    _ai_site_ratio_threshold = 0.0
+    # AI 账号分享率门槛：站点账号分享率达到该值才对该站种子生效 AI 决策，0 表示不启用（正整数）
+    _ai_site_ratio_threshold = 0
     # 种子状态机：{下载器名称: {种子Hash: 状态}}
     # 状态：pending（待评估）/ limited（限速中）/ recovering（恢复中）/ idle（忽略）
     _seed_states: Dict[str, Dict[str, str]] = {}
@@ -183,7 +183,7 @@ class QbUploadLimiter(_PluginBase):
         self._ai_enabled = bool(config.get("ai_enabled"))
         self._ai_eval_interval = max(self._to_int(config.get("ai_eval_interval"), 3600), 60)
         self._ai_max_limit = max(self._to_int(config.get("ai_max_limit"), 0), 0)
-        self._ai_site_ratio_threshold = self._to_non_negative_ratio(config.get("ai_site_ratio_threshold"), 0.0)
+        self._ai_site_ratio_threshold = max(self._to_int(config.get("ai_site_ratio_threshold"), 0), 0)
         self._downloaders = self._normalize_config_list(config.get("downloaders"))
         self._sites = self._normalize_config_list(config.get("sites"))
         # 站点映射（域名 -> 名称、名称小写 -> 名称）只构建一次，供本轮所有种子复用
@@ -688,11 +688,11 @@ class QbUploadLimiter(_PluginBase):
                                             "model": "ai_site_ratio_threshold",
                                             "label": "AI 账号分享率门槛",
                                             "placeholder": "0 = 不启用",
-                                            "hint": "站点账号分享率达到该值才对该站种子生效 AI 决策；未达标（或查不到）回退常规阈值规则",
+                                            "hint": "正整数，0=不启用；站点账号分享率达到该值才对该站种子生效 AI 决策，未达标（或查不到）回退常规阈值规则",
                                             "persistent-hint": True,
                                             "type": "number",
                                             "min": 0,
-                                            "step": 0.1,
+                                            "step": 1,
                                             "hide-spin-buttons": True,
                                         },
                                     }
@@ -2800,23 +2800,6 @@ class QbUploadLimiter(_PluginBase):
         if number <= 0:
             return default
         return number
-
-    @staticmethod
-    def _to_non_negative_ratio(value: Any, default: float = 0.0) -> float:
-        """
-        安全转换为非负浮点数（最多 1 位小数），用于「0 表示不启用」的门槛类配置。
-
-        规则：NaN、非数字或负数一律回退默认值；0 保留为 0；正数四舍五入保留 1 位小数。
-        """
-        if value is None or isinstance(value, bool):
-            return default
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return default
-        if number != number or number < 0:  # NaN 或负数
-            return default
-        return round(number, 1)
 
     @staticmethod
     def _format_limit(limit: float) -> str:
