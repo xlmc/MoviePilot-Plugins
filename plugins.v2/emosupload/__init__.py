@@ -23,6 +23,8 @@ import urllib.request
 import urllib.error
 
 from app.core.event import eventmanager, Event
+from app.db.transferhistory_oper import TransferHistoryOper
+from app.helper.downloader import DownloaderHelper
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType
@@ -58,6 +60,7 @@ class EmosUpload(_PluginBase):
     _token_path = "/opt/data/creds/emos_token"
     _token = ""
     _upload_mode = "ask"        # ask 或 silent
+    _skip_tags = "刷流,保种,seedbox"  # 跳过标签（逗号分隔），命中的种子不上传
     _target_parts = 24          # 目标分片数
     _concurrency = 16           # 并发线程数
     _notify_channel = []        # 通知渠道
@@ -80,6 +83,7 @@ class EmosUpload(_PluginBase):
         self._enabled = bool(config.get("enabled"))
         self._token_path = config.get("token_path") or self._token_path
         self._upload_mode = config.get("upload_mode") or self._upload_mode
+        self._skip_tags = config.get("skip_tags") or self._skip_tags
         self._target_parts = int(config.get("target_parts") or self._target_parts)
         self._concurrency = int(config.get("concurrency") or self._concurrency)
         self._notify_channel = config.get("notify_channel") or []
@@ -201,6 +205,24 @@ class EmosUpload(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "skip_tags",
+                                            "label": "跳过标签（逗号分隔，命中种子的标签则不上传）",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
                                 "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
@@ -248,6 +270,7 @@ class EmosUpload(_PluginBase):
             "enabled": False,
             "token_path": "/opt/data/creds/emos_token",
             "upload_mode": "ask",
+            "skip_tags": "刷流,保种,seedbox",
             "target_parts": 24,
             "concurrency": 16,
             "notify_channel": [],
@@ -403,12 +426,12 @@ class EmosUpload(_PluginBase):
         if not transferinfo:
             return
 
-        # 获取源文件路径（上传源文件到 EMOS）
+        # 获取源文件路径（上传源文件到 EMOS），transferinfo.path 即转移前源路径
         source_path = None
-        if hasattr(transferinfo, 'src') and transferinfo.src:
-            source_path = transferinfo.src
-        elif hasattr(transferinfo, 'source_diritem') and transferinfo.source_diritem:
-            source_path = transferinfo.source_diritem.path
+        if getattr(transferinfo, 'path', None):
+            source_path = str(transferinfo.path)
+        elif getattr(transferinfo, 'target_path', None):
+            source_path = str(transferinfo.target_path)
 
         if not source_path:
             logger.warning(f"{self.LOG_TAG}无法获取源文件路径")
@@ -416,6 +439,11 @@ class EmosUpload(_PluginBase):
 
         if not os.path.exists(source_path):
             logger.warning(f"{self.LOG_TAG}源文件不存在: {source_path}")
+            return
+
+        # 跳过带刷流等标签的种子
+        if self._is_skip_tag_source(source_path):
+            logger.info(f"{self.LOG_TAG}命中断流/保种标签，跳过: {source_path}")
             return
 
         file_path = Path(source_path)
@@ -429,6 +457,76 @@ class EmosUpload(_PluginBase):
             daemon=True,
         )
         thread.start()
+
+    def _is_skip_tag_source(self, source_path: str) -> bool:
+        """
+        判断源文件是否命中断流/保种等跳过标签。
+
+        通过源路径反查 MoviePilot 转移历史拿到 download_hash，
+        再到下载器中读取该种子标签，命中配置的跳过标签则跳过。
+        """
+        if not self._skip_tags:
+            return False
+        skip_list = [t.strip() for t in self._skip_tags.split(",") if t.strip()]
+        if not skip_list:
+            return False
+
+        download_hash = None
+        try:
+            history = TransferHistoryOper().get_by_src(source_path)
+            if history and history.download_hash:
+                download_hash = history.download_hash
+        except Exception as e:
+            logger.warning(f"{self.LOG_TAG}反查转移历史失败: {e}")
+
+        if not download_hash:
+            return False
+
+        # 遍历下载器，查找该 hash 的种子标签
+        try:
+            services = DownloaderHelper().get_services()
+            for _name, service_info in services.items():
+                downloader = service_info.instance
+                if not downloader or downloader.is_inactive():
+                    continue
+                downloader_type = getattr(service_info, "type", "")
+                try:
+                    torrents, error = downloader.get_torrents()
+                except Exception as e:
+                    logger.warning(f"{self.LOG_TAG}获取下载器种子失败: {e}")
+                    continue
+                if error or not torrents:
+                    continue
+                for torrent in torrents:
+                    if self._torrent_hash(torrent, downloader_type) != download_hash:
+                        continue
+                    tags = self._torrent_tags(torrent, downloader_type)
+                    if any(tag and tag.lower() in [s.lower() for s in skip_list] for tag in tags):
+                        logger.info(f"{self.LOG_TAG}种子 [{download_hash}] 命中跳过标签: {tags}")
+                        return True
+        except Exception as e:
+            logger.warning(f"{self.LOG_TAG}读取下载器标签失败: {e}")
+
+        return False
+
+    @staticmethod
+    def _torrent_tags(torrent: Any, downloader_type: str) -> List[str]:
+        """获取种子标签列表。"""
+        if downloader_type == "qbittorrent":
+            if not isinstance(torrent, dict):
+                return []
+            tags = torrent.get("tags") or ""
+            return [str(t).strip() for t in str(tags).split(",") if str(t).strip()]
+        labels = getattr(torrent, "labels", None) or []
+        return [str(label).strip() for label in labels if str(label).strip()]
+
+    @staticmethod
+    def _torrent_hash(torrent: Any, downloader_type: str) -> str:
+        """获取种子 hash。"""
+        if downloader_type == "qbittorrent":
+            return str(torrent.get("hash") or "").strip() if isinstance(torrent, dict) else ""
+        hash_val = getattr(torrent, "hash", None)
+        return str(hash_val or "").strip()
 
     def _handle_upload(self, file_path: str):
         """处理上传逻辑。
