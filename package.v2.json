@@ -66,12 +66,13 @@
     "name": "EMOS上传",
     "description": "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传。",
     "labels": "上传,EMOS,Emby,资源站",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Emos_A.svg",
     "author": "xlmc",
     "level": 1,
     "history": {
-      "v1.0.0": "初始版本：支持 TransferComplete 事件监听、服务器端识别、版本对比、分片并发上传、ask/silent 两种模式、上传历史记录"
+      "v1.1.0": "新增 ask 模式确认流程（识别后汇报待确认，用户确认后才上传）；新增跳过标签功能（刷流/保种/seedbox 标签的种子不自动上传）；修正源文件路径字段获取方式",
+      "v1.0.0": "初始版本：支持 TransferComplete 事件监听、服务器端识别、版本对比（分辨率+文件大小）、分片并发上传、ask/silent 两种模式、上传历史记录"
     }
   }
 }
