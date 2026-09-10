@@ -1,4 +1,4 @@
-﻿"""
+"""
 EMOS 上传插件（MoviePilot V2）。
 
 功能：
@@ -7,15 +7,12 @@ EMOS 上传插件（MoviePilot V2）。
 3. 上传前检查 EMOS 已有资源版本，避免重复上传；
 4. 支持 ask/silent 两种上传模式；
 5. 支持分片并发上传，最大化吞吐。
-
-EMOS 控制台：emya.wwzb.de
-API 主域：已硬编码（不暴露）
-识别域：已硬编码（不暴露）
 """
 
 import json
 import math
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -37,10 +34,11 @@ class EmosUpload(_PluginBase):
 
     监听 MoviePilot 入库完成事件，将媒体文件上传到
     EMOS（Emby 资源站上传分发系统）。
+    支持 ask（上传前确认）与 silent（自动上传）两种模式。
     """
 
     plugin_name = "EMOS上传"
-    plugin_desc = "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传。"
+    plugin_desc = "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传，支持 ask/silent 两种模式。"
     plugin_icon = "Emos_A.svg"
     plugin_version = "1.0.0"
     plugin_author = "xlmc"
@@ -72,6 +70,10 @@ class EmosUpload(_PluginBase):
     # ---- 上传历史 ----
     _upload_history: List[dict] = []
 
+    # ---- 待确认上传队列（ask 模式） ----
+    _pending_uploads: List[dict] = []
+    _pending_seq = 0
+
     def init_plugin(self, config: dict = None):
         """根据当前配置初始化插件。"""
         config = config or {}
@@ -89,7 +91,6 @@ class EmosUpload(_PluginBase):
         # 如果勾选了仅运行一次，手动触发一次
         if self._onlyonce:
             self._onlyonce = False
-            # 保存配置清除 onlyonce
             self.update_config({"onlyonce": False})
 
     def _load_token(self):
@@ -121,7 +122,16 @@ class EmosUpload(_PluginBase):
                 "data": {
                     "action": "emos_status",
                 },
-            }
+            },
+            {
+                "cmd": "/emos_confirm",
+                "event": EventType.PluginAction,
+                "desc": "确认待上传文件（传=[全部编号]），例：/emos_confirm 传 1 2 / 不传 1",
+                "category": "插件命令",
+                "data": {
+                    "action": "emos_confirm",
+                },
+            },
         ]
 
     def get_api(self) -> List[Dict[str, Any]]:
@@ -133,7 +143,15 @@ class EmosUpload(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "获取上传状态",
-                "description": "获取当前插件状态和上传历史",
+                "description": "获取当前插件状态、待确认列表和上传历史",
+            },
+            {
+                "path": "/pending",
+                "endpoint": self._api_pending,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "获取待确认列表",
+                "description": "获取当前待确认上传的列表",
             },
         ]
 
@@ -169,7 +187,7 @@ class EmosUpload(_PluginBase):
                                             "model": "upload_mode",
                                             "label": "上传模式",
                                             "items": [
-                                                {"title": "询问模式 (ask) - 上传前需要确认", "value": "ask"},
+                                                {"title": "询问模式 (ask) - 识别后确认再上传", "value": "ask"},
                                                 {"title": "静默模式 (silent) - 自动上传", "value": "silent"},
                                             ],
                                         },
@@ -242,6 +260,7 @@ class EmosUpload(_PluginBase):
         token_status = "✅ 已配置" if self._token else "❌ 未配置"
         mode_text = "询问模式" if self._upload_mode == "ask" else "静默模式"
         history_count = len(self._upload_history)
+        pending_count = len(self._pending_uploads)
 
         page = [
             {
@@ -284,7 +303,7 @@ class EmosUpload(_PluginBase):
                                 "props": {
                                     "type": "info",
                                     "variant": "tonal",
-                                    "text": f"上传模式: {mode_text} | 历史: {history_count} 条",
+                                    "text": f"上传模式: {mode_text} | 待确认: {pending_count} | 历史: {history_count} 条",
                                 },
                             }
                         ],
@@ -292,6 +311,28 @@ class EmosUpload(_PluginBase):
                 ],
             },
         ]
+
+        # 待确认列表
+        if self._pending_uploads:
+            page.append({
+                "component": "VRow",
+                "content": [
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12},
+                        "content": [
+                            {
+                                "component": "VAlert",
+                                "props": {
+                                    "type": "warning",
+                                    "variant": "tonal",
+                                    "text": f"⏳ {pending_count} 个文件待确认上传，可用 /emos_confirm 传 确认",
+                                },
+                            }
+                        ],
+                    },
+                ],
+            })
 
         # 上传历史
         if self._upload_history:
@@ -312,7 +353,7 @@ class EmosUpload(_PluginBase):
                                         {"title": "时间", "key": "time"},
                                         {"title": "结果", "key": "result"},
                                     ],
-                                    "items": self._upload_history[-10:],  # 最近10条
+                                    "items": self._upload_history[-10:],
                                     "density": "compact",
                                     "hover": True,
                                 },
@@ -328,7 +369,7 @@ class EmosUpload(_PluginBase):
             "props": {
                 "type": "warning",
                 "variant": "tonal",
-                "text": "说明：入库完成后自动识别并上传到 EMOS。ask 模式需确认，silent 模式自动上传。相同版本不重复上传。",
+                "text": "说明：入库完成后自动识别并处理。ask 模式先汇报待确认，silent 模式自动上传。相同版本不重复上传。",
             },
         })
 
@@ -358,10 +399,7 @@ class EmosUpload(_PluginBase):
         if not event_info:
             return
 
-        # 获取入库信息
         transferinfo = event_info.get("transferinfo")
-        mediainfo = event_info.get("mediainfo")
-
         if not transferinfo:
             return
 
@@ -376,27 +414,28 @@ class EmosUpload(_PluginBase):
             logger.warning(f"{self.LOG_TAG}无法获取源文件路径")
             return
 
-        # 检查源文件是否存在
         if not os.path.exists(source_path):
             logger.warning(f"{self.LOG_TAG}源文件不存在: {source_path}")
             return
 
-        # 获取文件名
         file_path = Path(source_path)
         file_name = file_path.name
-
         logger.info(f"{self.LOG_TAG}入库完成，准备上传: {file_name}")
 
-        # 异步处理上传
+        # 异步处理
         thread = threading.Thread(
             target=self._handle_upload,
-            args=(str(file_path), mediainfo),
+            args=(str(file_path),),
             daemon=True,
         )
         thread.start()
 
-    def _handle_upload(self, file_path: str, mediainfo=None):
-        """处理上传逻辑。"""
+    def _handle_upload(self, file_path: str):
+        """处理上传逻辑。
+
+        ask 模式：识别 + 版本对比后加入待确认队列并汇报，等待用户确认后上传。
+        silent 模式：识别 + 版本对比后直接上传。
+        """
         try:
             with self._upload_lock:
                 file_name = os.path.basename(file_path)
@@ -417,43 +456,77 @@ class EmosUpload(_PluginBase):
                 season = identify_result.get("season")
                 episode = identify_result.get("episode")
 
-                logger.info(f"{self.LOG_TAG}识别结果: {name} S{season:02d}E{episode:02d} ({item_type}-{item_id})")
+                if season is None or episode is None:
+                    item_label = f"ID={item_id}"
+                else:
+                    item_label = f"S{season:02d}E{episode:02d}"
+
+                logger.info(f"{self.LOG_TAG}识别结果: {name} {item_label} ({item_type}-{item_id})")
 
                 # 2. 检查是否已有资源
                 existing_media = self._check_media_exists(item_type, item_id)
                 video_medias = existing_media.get("video_medias", [])
 
+                # 3. 版本对比结论
+                has_same_version = False
+                version_report = ""
                 if video_medias:
-                    # 已有资源，检查版本
                     should_upload = self._compare_versions(file_name, file_size, video_medias)
-                    if not should_upload:
-                        logger.info(f"{self.LOG_TAG}已有相同版本，跳过上传")
-                        self._send_notification(f"⏭️ 跳过上传: {name} S{season:02d}E{episode:02d}\n已有相同版本资源")
+                    has_same_version = not should_upload
+                    version_report = self._build_version_report(video_medias)
+                    if has_same_version:
+                        logger.info(f"{self.LOG_TAG}已有相同版本，跳过")
+                        self._send_notification(
+                            f"⏭️ 跳过上传: {name} {item_label}\n"
+                            f"文件: {file_name}\n"
+                            f"已有相同版本（分辨率+大小匹配），无需重复"
+                        )
                         return
 
-                # 3. 上传文件
+                # 4. ask 模式：加入待确认队列并汇报
+                if self._upload_mode == "ask":
+                    self._pending_seq += 1
+                    seq = self._pending_seq
+                    self._pending_uploads.append({
+                        "seq": seq,
+                        "file_path": file_path,
+                        "file_name": file_name,
+                        "file_size": file_size,
+                        "item_type": item_type,
+                        "item_id": item_id,
+                        "name": name,
+                        "season": season,
+                        "episode": episode,
+                    })
+
+                    msg = (
+                        f"📥 待确认上传 [{seq}]\n"
+                        f"剧名: {name} {item_label}\n"
+                        f"文件: {file_name}\n"
+                        f"大小: {file_size / 1024 / 1024:.1f} MB ({self._extract_resolution(file_name) or '未知'})\n"
+                    )
+                    if version_report:
+                        msg += f"已有资源:\n{version_report}\n"
+                        msg += "（版本不同，可上传补充）\n"
+                    else:
+                        msg += "EMOS 暂无该资源，将作为首个版本上传\n"
+                    msg += "\n回复确认：\n"
+                    msg += "  /emos_confirm 传 → 传全部\n"
+                    msg += "  /emos_confirm 传 2 → 只传编号2\n"
+                    msg += "  /emos_confirm 不传 2 → 跳过编号2"
+                    self._send_notification(msg)
+                    return
+
+                # ---- silent 模式：直接上传 ----
                 upload_result = self._upload_file(file_path, item_type, item_id)
                 if upload_result.get("error"):
                     logger.error(f"{self.LOG_TAG}上传失败: {upload_result.get('error')}")
                     self._send_notification(f"❌ 上传失败: {file_name}\n{upload_result.get('error', '')}")
                     return
 
-                # 4. 记录上传历史
-                history_entry = {
-                    "file": file_name,
-                    "size": f"{file_size / 1024 / 1024:.1f} MB",
-                    "speed": upload_result.get("speed", "N/A"),
-                    "time": time.strftime("%Y-%m-%d %H:%M"),
-                    "result": "✅ 成功",
-                }
-                self._upload_history.append(history_entry)
-                # 保留最近50条
-                if len(self._upload_history) > 50:
-                    self._upload_history = self._upload_history[-50:]
-
-                # 5. 发送通知
+                self._record_history(file_name, file_size, upload_result)
                 self._send_notification(
-                    f"✅ 上传成功: {name} S{season:02d}E{episode:02d}\n"
+                    f"✅ 上传成功: {name} {item_label}\n"
                     f"文件: {file_name}\n"
                     f"大小: {file_size / 1024 / 1024:.1f} MB\n"
                     f"速度: {upload_result.get('speed', 'N/A')}"
@@ -462,6 +535,30 @@ class EmosUpload(_PluginBase):
         except Exception as e:
             logger.error(f"{self.LOG_TAG}上传处理异常: {e}")
             self._send_notification(f"❌ 上传异常: {str(e)}")
+
+    def _build_version_report(self, video_medias: list) -> str:
+        """生成已有资源版本报告文本。"""
+        lines = []
+        for m in video_medias:
+            media_name = m.get("media_name", "")
+            remote_size = m.get("media_file_size") or m.get("size") or 0
+            remote_res = self._extract_resolution(media_name) or "未知"
+            size_gb = remote_size / 1024 / 1024 / 1024 if remote_size else 0
+            lines.append(f"  • {remote_res} / {size_gb:.1f}GB")
+        return "\n".join(lines)
+
+    def _record_history(self, file_name: str, file_size: int, upload_result: dict):
+        """记录上传历史。"""
+        entry = {
+            "file": file_name,
+            "size": f"{file_size / 1024 / 1024:.1f} MB",
+            "speed": upload_result.get("speed", "N/A"),
+            "time": time.strftime("%Y-%m-%d %H:%M"),
+            "result": "✅ 成功",
+        }
+        self._upload_history.append(entry)
+        if len(self._upload_history) > 50:
+            self._upload_history = self._upload_history[-50:]
 
     # ---- EMOS API 封装 ----
 
@@ -500,8 +597,6 @@ class EmosUpload(_PluginBase):
 
     def _extract_resolution(self, filename: str) -> str:
         """从文件名提取分辨率。"""
-        import re
-        # 匹配分辨率模式，返回归一化值
         patterns = [
             (r'(2160P|4K|UHD)', '2160P'),
             (r'(1080P)', '1080P'),
@@ -517,7 +612,7 @@ class EmosUpload(_PluginBase):
         """
         比较本地文件与远程资源版本。
 
-        只比较：1. 分辨率  2. 文件大小
+        只比较：1. 分辨率  2. 文件大小（5% 误差）
 
         返回 True 表示需要上传（版本不同或远程无资源）。
         返回 False 表示不需要上传（已有相同版本）。
@@ -525,30 +620,27 @@ class EmosUpload(_PluginBase):
         if not remote_medias:
             return True
 
-        # 从本地文件名提取分辨率
         local_resolution = self._extract_resolution(local_filename)
 
-        # 遍历远程资源
         for media in remote_medias:
             remote_name = media.get("media_name", "")
-            remote_size = media.get("size", 0) or 0
+            remote_size = media.get("media_file_size") or media.get("size") or 0
 
             # 1. 比较分辨率
             remote_resolution = self._extract_resolution(remote_name)
             if local_resolution and remote_resolution:
                 if local_resolution != remote_resolution:
-                    continue  # 分辨率不同，继续找下一个
+                    continue
 
             # 2. 比较文件大小（允许 5% 误差）
             if remote_size > 0 and local_size > 0:
                 size_diff = abs(local_size - remote_size) / remote_size
                 if size_diff > 0.05:
-                    continue  # 大小差异超过 5%，继续找下一个
+                    continue
 
-            # 分辨率和大小都匹配
             return False
 
-        return True  # 未找到匹配版本
+        return True
 
     def _put_part(self, url: str, chunk: bytes, number: int) -> Tuple[int, str]:
         """PUT 一个分片，返回 (number, etag)。"""
@@ -591,7 +683,6 @@ class EmosUpload(_PluginBase):
         part_min = d.get("multipart_size", {}).get("min", 5 * 1024 * 1024)
         part_max = d.get("multipart_size", {}).get("max", 5 * 1024 * 1024 * 1024)
 
-        # 计算分片大小
         part_size = max(part_min, min(part_max, math.ceil(fsize / self._target_parts / (1024 * 1024)) * 1024 * 1024))
         part_count = math.ceil(fsize / part_size)
 
@@ -650,7 +741,7 @@ class EmosUpload(_PluginBase):
         logger.info(f"{self.LOG_TAG}分片耗时 {total_t:.0f}s, 平均 {speed_str}")
 
         # 4. 完成分片合并
-        comp = self._req("POST", f"https://{self._API_BASE}/api/upload/multipart/{file_id}/complete", {
+        self._req("POST", f"https://{self._API_BASE}/api/upload/multipart/{file_id}/complete", {
             "parts": sorted(etags, key=lambda x: x["number"]),
         })
 
@@ -692,6 +783,66 @@ class EmosUpload(_PluginBase):
 
         if action == "emos_status":
             self._handle_status_command()
+        elif action == "emos_confirm":
+            self._handle_confirm_command(event_data)
+
+    def _handle_confirm_command(self, event_data: dict):
+        """处理用户确认命令：/emos_confirm 传 [编号列表] / 不传 [编号列表]"""
+        text = event_data.get("text") or event_data.get("content") or ""
+        raw = text.strip()
+
+        if not raw:
+            self._send_notification("📭 请输入确认指令，例：/emos_confirm 传 / 不传 1")
+            return
+
+        # 解析动作
+        if "不传" in raw or "跳过" in raw or raw.lower().startswith("skip"):
+            do_upload = False
+        elif "传" in raw or raw.lower().startswith("up"):
+            do_upload = True
+            raw = raw.replace("上传", "").replace("传", "")
+        else:
+            self._send_notification("❌ 无法识别指令。请回复：/emos_confirm 传 [编号] 或 /emos_confirm 不传 [编号]")
+            return
+
+        if not self._pending_uploads:
+            self._send_notification("📭 当前没有待确认的上传任务")
+            return
+
+        # 解析编号列表
+        nums = re.findall(r'\d+', raw) if raw else []
+        if nums:
+            target_nums = set(int(x) for x in nums)
+            targets = [n for n in self._pending_uploads if n["seq"] in target_nums]
+        else:
+            targets = list(self._pending_uploads)
+
+        if not targets:
+            self._send_notification("❌ 未找到对应编号的待确认任务。请先 /emos_status 查看待确认列表")
+            return
+
+        if do_upload:
+            for item in targets:
+                upload_result = self._upload_file(item["file_path"], item["item_type"], item["item_id"])
+                if upload_result.get("error"):
+                    logger.error(f"{self.LOG_TAG}上传失败 [{item['seq']}]: {upload_result.get('error')}")
+                    self._send_notification(f"❌ 上传失败 [{item['seq']}] {item['file_name']}\n{upload_result.get('error', '')}")
+                    continue
+                self._record_history(item["file_name"], item["file_size"], upload_result)
+                self._send_notification(
+                    f"✅ 上传成功: {item['name']} [{item['seq']}]\n"
+                    f"文件: {item['file_name']}\n"
+                    f"大小: {item['file_size'] / 1024 / 1024:.1f} MB\n"
+                    f"速度: {upload_result.get('speed', 'N/A')}"
+                )
+            for t in targets:
+                if t in self._pending_uploads:
+                    self._pending_uploads.remove(t)
+        else:
+            for t in targets:
+                self._send_notification(f"⏭️ 已跳过: {t['file_name']}")
+                if t in self._pending_uploads:
+                    self._pending_uploads.remove(t)
 
     def _handle_status_command(self):
         """处理状态查询命令。"""
@@ -704,8 +855,15 @@ class EmosUpload(_PluginBase):
             f"插件: {status}\n"
             f"Token: {token_status}\n"
             f"模式: {mode}\n"
+            f"待确认: {len(self._pending_uploads)} 个\n"
             f"历史: {len(self._upload_history)} 条"
         )
+
+        if self._pending_uploads:
+            message += "\n\n📥 待确认列表："
+            for item in self._pending_uploads:
+                message += f"\n[{item['seq']}] {item['name']} {item['file_name']}"
+
         self._send_notification(message)
 
     # ---- API 端点 ----
@@ -716,6 +874,15 @@ class EmosUpload(_PluginBase):
             "enabled": self._enabled,
             "token_configured": bool(self._token),
             "upload_mode": self._upload_mode,
+            "pending_count": len(self._pending_uploads),
+            "pending": self._pending_uploads,
             "history_count": len(self._upload_history),
             "history": self._upload_history[-10:],
+        }
+
+    def _api_pending(self):
+        """API: 获取待确认列表。"""
+        return {
+            "pending_count": len(self._pending_uploads),
+            "pending": self._pending_uploads,
         }
