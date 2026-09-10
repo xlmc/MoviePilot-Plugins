@@ -43,7 +43,7 @@ class EmosUpload(_PluginBase):
     plugin_name = "EMOS上传"
     plugin_desc = "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传，支持 ask/silent 两种模式。"
     plugin_icon = "Emos_A.svg"
-    plugin_version = "1.2.1"
+    plugin_version = "1.2.2"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "emosupload_"
@@ -746,9 +746,15 @@ class EmosUpload(_PluginBase):
         return self._req("POST", url, {"filename": filename})
 
     def _check_media_exists(self, item_type: str, item_id: int) -> dict:
-        """检查媒体资源是否存在。"""
-        url = f"https://{self._API_BASE}/api/upload/video/base"
-        return self._req("GET", url, {"item_type": item_type, "item_id": item_id})
+        """检查媒体资源是否存在。
+
+        EMOS 该接口通过 URL query 传参（GET 请求），不能放在请求体中。
+        """
+        if not item_id:
+            return {}
+        url = (f"https://{self._API_BASE}/api/upload/video/base"
+               f"?item_type={item_type}&item_id={item_id}")
+        return self._req("GET", url)
 
     def _extract_resolution(self, filename: str) -> str:
         """从文件名提取分辨率。"""
