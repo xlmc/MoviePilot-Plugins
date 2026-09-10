@@ -48,7 +48,7 @@ class EmosUpload(_PluginBase):
     plugin_name = "EMOS上传"
     plugin_desc = "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传，支持 ask/silent 两种模式。"
     plugin_icon = "Emos_A.svg"
-    plugin_version = "2.0.0"
+    plugin_version = "2.1.0"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "emosupload_"
@@ -697,119 +697,161 @@ class EmosUpload(_PluginBase):
         hash_val = getattr(torrent, "hash", None)
         return str(hash_val or "").strip()
 
-    def _handle_upload_batch(self, file_paths: List[str]):
-        """后台线程：顺序上传多个源文件（整季/多文件入库场景）。"""
-        for fp in file_paths:
-            try:
-                self._handle_upload(fp)
-            except Exception as e:
-                logger.error(f"{self.LOG_TAG}上传处理异常 [{fp}]: {e}")
-
-    def _handle_upload(self, file_path: str):
-        """处理上传逻辑。
-
-        ask 模式：识别 + 版本对比后加入待确认队列并汇报，等待用户确认后上传。
-        silent 模式：识别 + 版本对比后直接上传。
-        """
+    def _inspect_file(self, file_path: str) -> dict:
+        """识别 + 版本对比单个文件，返回处理决策（供批量聚合）。"""
+        file_name = os.path.basename(file_path)
+        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        idr = self._identify_file(file_name)
+        if idr.get("error"):
+            return {"ok": False, "file_name": file_name, "error": idr.get("error")}
+        item_type = idr.get("item_type")
+        item_id = idr.get("item_id")
+        name = idr.get("name", "未知")
+        season = idr.get("season")
+        episode = idr.get("episode")
+        if season is None or episode is None:
+            item_label = f"ID={item_id}"
+        else:
+            item_label = f"S{season:02d}E{episode:02d}"
+        # 检查是否已有资源并版本对比
+        same_version = False
         try:
-            with self._upload_lock:
-                file_name = os.path.basename(file_path)
-                file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-
-                logger.info(f"{self.LOG_TAG}开始处理: {file_name} ({file_size / 1024 / 1024:.1f} MB)")
-
-                # 1. 服务器端识别
-                identify_result = self._identify_file(file_name)
-                if identify_result.get("error"):
-                    logger.error(f"{self.LOG_TAG}识别失败: {identify_result.get('error')}")
-                    self._send_notification(f"❌ 识别失败: {file_name}\n{identify_result.get('error', '')}")
-                    return
-
-                item_type = identify_result.get("item_type")
-                item_id = identify_result.get("item_id")
-                name = identify_result.get("name", "未知")
-                season = identify_result.get("season")
-                episode = identify_result.get("episode")
-
-                if season is None or episode is None:
-                    item_label = f"ID={item_id}"
-                else:
-                    item_label = f"S{season:02d}E{episode:02d}"
-
-                logger.info(f"{self.LOG_TAG}识别结果: {name} {item_label} ({item_type}-{item_id})")
-
-                # 2. 检查是否已有资源
-                existing_media = self._check_media_exists(item_type, item_id)
-                video_medias = existing_media.get("video_medias", [])
-
-                # 3. 版本对比结论
-                has_same_version = False
-                version_report = ""
-                if video_medias:
-                    should_upload = self._compare_versions(file_name, file_size, video_medias)
-                    has_same_version = not should_upload
-                    version_report = self._build_version_report(video_medias)
-                    if has_same_version:
-                        logger.info(f"{self.LOG_TAG}已有相同版本，跳过")
-                        self._send_notification(
-                            f"⏭️ 跳过上传: {name} {item_label}\n"
-                            f"文件: {file_name}\n"
-                            f"已有相同版本（分辨率+大小匹配），无需重复"
-                        )
-                        return
-
-                # 4. ask 模式：加入待确认队列并汇报
-                if self._upload_mode == "ask":
-                    self._pending_seq += 1
-                    seq = self._pending_seq
-                    self._pending_uploads.append({
-                        "seq": seq,
-                        "file_path": file_path,
-                        "file_name": file_name,
-                        "file_size": file_size,
-                        "item_type": item_type,
-                        "item_id": item_id,
-                        "name": name,
-                        "season": season,
-                        "episode": episode,
-                    })
-
-                    msg = (
-                        f"📥 待确认上传 [{seq}]\n"
-                        f"剧名: {name} {item_label}\n"
-                        f"文件: {file_name}\n"
-                        f"大小: {file_size / 1024 / 1024:.1f} MB ({self._extract_resolution(file_name) or '未知'})\n"
-                    )
-                    if version_report:
-                        msg += f"已有资源:\n{version_report}\n"
-                        msg += "（版本不同，可上传补充）\n"
-                    else:
-                        msg += "EMOS 暂无该资源，将作为首个版本上传\n"
-                    msg += "\n回复确认：\n"
-                    msg += "  /emos_confirm 传 → 传全部\n"
-                    msg += "  /emos_confirm 传 2 → 只传编号2\n"
-                    msg += "  /emos_confirm 不传 2 → 跳过编号2"
-                    self._send_notification(msg)
-                    return
-
-                # ---- silent 模式：直接上传 ----
-                upload_result = self._upload_file(file_path, item_type, item_id)
-                if upload_result.get("error"):
-                    logger.error(f"{self.LOG_TAG}上传失败: {upload_result.get('error')}")
-                    self._send_notification(f"❌ 上传失败: {file_name}\n{upload_result.get('error', '')}")
-                    return
-
-                self._record_history(file_name, file_size, upload_result)
-                self._send_notification(
-                    f"✅ 上传成功: {name} {item_label}\n"
-                    f"文件: {file_name}\n"
-                    f"大小: {file_size / 1024 / 1024:.1f} MB\n"
-                    f"速度: {upload_result.get('speed', 'N/A')}"
-                )
-
+            existing = self._check_media_exists(item_type, item_id)
+            video_medias = existing.get("video_medias", [])
+            if video_medias:
+                same_version = not self._compare_versions(file_name, file_size, video_medias)
         except Exception as e:
-            logger.error(f"{self.LOG_TAG}上传处理异常: {e}")
-            self._send_notification(f"❌ 上传异常: {str(e)}")
+            logger.warning(f"{self.LOG_TAG}版本检查失败 {file_name}: {e}")
+        return {
+            "ok": True, "file_path": file_path, "file_name": file_name, "file_size": file_size,
+            "item_type": item_type, "item_id": item_id, "name": name, "season": season,
+            "episode": episode, "item_label": item_label, "same_version": same_version,
+        }
+
+    def _handle_upload_batch(self, file_paths: List[str]):
+        """后台线程：聚合处理一个种子下载的多个文件，生成一条聚合通知。
+
+        同一剧名+季合并为一行，仅显示总大小。
+        ask 模式：加入待确认队列，发一条待确认清单。
+        silent 模式：逐个上传，发一条完成汇总。
+        """
+        if not file_paths:
+            return
+
+        with self._upload_lock:
+            # 1. 逐个识别 + 版本对比
+            results: List[dict] = []
+            for fp in file_paths:
+                try:
+                    results.append(self._inspect_file(fp))
+                except Exception as e:
+                    results.append({"ok": False, "file_name": os.path.basename(fp), "error": str(e)})
+
+            uploadable = [r for r in results if r.get("ok") and not r.get("same_version")]
+            skipped = [r for r in results if r.get("ok") and r.get("same_version")]
+            failed_id = [r for r in results if not r.get("ok")]
+
+            # 2. ask 模式：入队 + 聚合待确认通知
+            if self._upload_mode == "ask":
+                if uploadable:
+                    for r in uploadable:
+                        self._pending_seq += 1
+                        r["seq"] = self._pending_seq
+                        self._pending_uploads.append({
+                            "seq": r["seq"], "file_path": r["file_path"], "file_name": r["file_name"],
+                            "file_size": r["file_size"], "item_type": r["item_type"], "item_id": r["item_id"],
+                            "name": r["name"], "season": r["season"], "episode": r["episode"],
+                        })
+                    self._send_notification(self._build_batch_ask_msg(uploadable, skipped, failed_id))
+                else:
+                    if skipped or failed_id:
+                        self._send_notification(self._build_skip_fail_msg(skipped, failed_id))
+                return
+
+            # 3. silent 模式：逐个上传 + 聚合汇总
+            ok_list: List[str] = []
+            fail_list: List[dict] = []
+            for r in uploadable:
+                ur = self._upload_file(r["file_path"], r["item_type"], r["item_id"])
+                if ur.get("error"):
+                    fail_list.append({"file_name": r["file_name"], "error": ur.get("error")})
+                    continue
+                self._record_history(r["file_name"], r["file_size"], ur)
+                ok_list.append(r)
+            self._send_notification(self._build_batch_summary(uploadable, ok_list, fail_list, skipped, failed_id))
+
+    def _group_lines(self, items: List[dict]) -> List[str]:
+        """按 (剧名, 季) 分组，每组合并为一行，仅显示总大小。"""
+        groups: Dict[tuple, List[dict]] = {}
+        for it in items:
+            key = (str(it.get("name", "未知")), it.get("season"))
+            groups.setdefault(key, []).append(it)
+        lines = []
+        for (name, season), its in groups.items():
+            total = sum(int(x.get("file_size") or 0) for x in its)
+            if season is not None:
+                try:
+                    season_label = f"S{int(season):02d}"
+                except (TypeError, ValueError):
+                    season_label = f"S{season}"
+                lines.append(f"{name} {season_label}：{self._fmt_size(total)}")
+            else:
+                lines.append(f"{name}：{self._fmt_size(total)}")
+        return lines
+
+    @staticmethod
+    def _fmt_size(size: int) -> str:
+        """把字节数格式化为易读大小。"""
+        try:
+            size = float(size or 0)
+            gb = size / 1024 / 1024 / 1024
+            return f"{gb:.1f}GB" if gb >= 1 else f"{size / 1024 / 1024:.1f}MB"
+        except Exception:
+            return "0B"
+
+    def _build_batch_ask_msg(self, uploadable, skipped, failed_id) -> str:
+        """构造 ask 模式聚合待确认通知（每剧名+季仅一行，只显示总大小）。"""
+        lines = self._group_lines(uploadable)
+        msg = f"📥 待确认上传（共 {len(uploadable)} 个文件）"
+        for ln in lines:
+            msg += f"\n{ln}"
+        if skipped:
+            msg += f"\n⏭️ 跳过 {len(skipped)} 个（已有相同版本）"
+        if failed_id:
+            for f in failed_id[:5]:
+                msg += f"\n❌ 识别失败: {f['file_name']}"
+        msg += "\n\n回复确认：\n"
+        msg += "  /emos_confirm 传 → 全部上传\n"
+        msg += "  /emos_confirm 传 2 → 只传编号2\n"
+        msg += "  /emos_confirm 不传 2 → 跳过编号2"
+        return msg
+
+    def _build_skip_fail_msg(self, skipped, failed_id) -> str:
+        """全部没有可上传文件时的提示。"""
+        msg = "⏭️ 本次无可上传文件"
+        if skipped:
+            msg += f"（{len(skipped)} 个已有相同版本）"
+        if failed_id:
+            for f in failed_id[:5]:
+                msg += f"\n❌ 识别失败: {f['file_name']}"
+        return msg
+
+    def _build_batch_summary(self, uploadable, ok_list, fail_list, skipped, failed_id) -> str:
+        """构造 silent 模式聚合完成汇总（每剧名+季仅一行，只显示总大小）。"""
+        items_ok = [dict(x) for x in ok_list]
+        # 分组汇总
+        msg = f"✅ 批量上传完成（{len(uploadable)} 个文件）"
+        for ln in self._group_lines(items_ok):
+            msg += f"\n{ln}"
+        if skipped:
+            msg += f"⏭️ 跳过 {len(skipped)}（相同版本）"
+        if failed_id:
+            for f in failed_id[:5]:
+                msg += f"\n❌ 识别失败: {f['file_name']}"
+        if fail_list:
+            for f in fail_list[:5]:
+                msg += f"\n❌ 失败: {f['file_name']} {f['error']}"
+        return msg
 
     def _build_version_report(self, video_medias: list) -> str:
         """生成已有资源版本报告文本。"""
