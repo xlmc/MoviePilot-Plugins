@@ -1,11 +1,12 @@
-# xlmc 的 MoviePilot 插件
+﻿# xlmc 的 MoviePilot 插件
 
-[MoviePilot](https://github.com/jxxghp/MoviePilot) V2 插件市场结构的插件仓库，目前包含两个插件：
+[MoviePilot](https://github.com/jxxghp/MoviePilot) V2 插件市场结构的插件仓库，目前包含三个插件：
 
 | 插件 | 版本 | 简介 |
 | --- | --- | --- |
 | <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v1.3.19 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速 |
 | <img src="icons/clean.png" width="26" align="top"/> **[源文件联动清理](#源文件联动清理-scrapefileclean)** | v1.0.7 | 手动删除源文件后，自动联动清理硬链接、刮削文件与转移记录 |
+| <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emupload)** | v1.0.0 | MoviePilot 入库后自动上传源文件到 EMOS 资源站 |
 
 ## 安装
 
@@ -46,3 +47,19 @@ https://github.com/xlmc/MoviePilot-Plugins
 > 本插件已收录进 MoviePilot 官方插件市场（[jxxghp/MoviePilot-Plugins](https://github.com/jxxghp/MoviePilot-Plugins)），建议直接从官方市场安装以获取最新版本。
 
 详细功能与配置说明见 [plugins.v2/scrapefileclean/README.md](plugins.v2/scrapefileclean/README.md)。
+
+## EMOS上传 EmUpload
+
+MoviePilot 入库完成后自动将源文件上传到 EMOS（Emby 资源站上传分发系统）。通过 EMOS 服务器端接口识别文件并匹配剧集信息，上传前自动对比已有资源版本（分辨率与文件大小），相同版本不重复上传。
+
+主要特性：
+
+- 入库自动触发：监听 MoviePilot 整理完成事件，自动上传源文件
+- 服务器端识别：调用 EMOS 识别接口，自动匹配剧集信息
+- 版本对比：上传前检查已有资源版本（分辨率 + 文件大小），相同版本跳过
+- 分片并发上传：多分片并发上传到 EMOS 存储，最大化吞吐
+- 两种上传模式：ask（询问确认）/ silent（静默自动上传）
+- 上传历史记录：记录最近 50 条上传记录
+- 通知集成：上传结果通过 MoviePilot 通知渠道推送
+
+详细功能与配置说明见 [plugins.v2/emosupload/README.md](plugins.v2/emosupload/README.md)。
