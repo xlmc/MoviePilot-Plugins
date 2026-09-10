@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v1.3.19 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速 |
 | <img src="icons/clean.png" width="26" align="top"/> **[源文件联动清理](#源文件联动清理-scrapefileclean)** | v1.0.7 | 手动删除源文件后，自动联动清理硬链接、刮削文件与转移记录 |
-| <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emupload)** | v1.2.2 | MoviePilot 入库后自动上传源文件到 EMOS 资源站 |
+| <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emupload)** | v1.3.0 | MoviePilot 入库后自动上传源文件到 EMOS 资源站 |
 
 ## 安装
 

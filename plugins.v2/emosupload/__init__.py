@@ -43,7 +43,7 @@ class EmosUpload(_PluginBase):
     plugin_name = "EMOS上传"
     plugin_desc = "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传，支持 ask/silent 两种模式。"
     plugin_icon = "Emos_A.svg"
-    plugin_version = "1.2.2"
+    plugin_version = "1.3.0"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "emosupload_"
@@ -483,34 +483,42 @@ class EmosUpload(_PluginBase):
         if not transferinfo:
             return
 
-        # 获取源文件路径（上传源文件到 EMOS），transferinfo.path 即转移前源路径
-        source_path = None
-        if getattr(transferinfo, 'path', None):
-            source_path = str(transferinfo.path)
-        elif getattr(transferinfo, 'target_path', None):
-            source_path = str(transferinfo.target_path)
+        # 收集本次入库的全部源文件（整季/多文件时 file_list 含所有文件，path 仅是第一个）
+        source_files: List[str] = []
+        if getattr(transferinfo, 'file_list', None):
+            for f in transferinfo.file_list:
+                try:
+                    fp = str(f)
+                except Exception:
+                    continue
+                if fp and os.path.isfile(fp) and fp not in source_files:
+                    source_files.append(fp)
+        if not source_files:
+            if getattr(transferinfo, 'path', None) and os.path.isfile(str(transferinfo.path)):
+                source_files.append(str(transferinfo.path))
 
-        if not source_path:
-            logger.warning(f"{self.LOG_TAG}无法获取源文件路径")
+        if not source_files:
+            logger.warning(f"{self.LOG_TAG}未找到可上传的源文件（源文件可能已被移动）")
             return
 
-        if not os.path.exists(source_path):
-            logger.warning(f"{self.LOG_TAG}源文件不存在: {source_path}")
+        # 过滤掉带刷流/保种标签的种子
+        to_upload: List[str] = []
+        for fp in source_files:
+            if self._is_skip_tag_source(fp):
+                logger.info(f"{self.LOG_TAG}命中断流/保种标签，跳过: {fp}")
+                continue
+            to_upload.append(fp)
+
+        if not to_upload:
+            logger.info(f"{self.LOG_TAG}无待上传文件（全部被跳过标签过滤）")
             return
 
-        # 跳过带刷流等标签的种子
-        if self._is_skip_tag_source(source_path):
-            logger.info(f"{self.LOG_TAG}命中断流/保种标签，跳过: {source_path}")
-            return
+        logger.info(f"{self.LOG_TAG}入库完成，即将上传 {len(to_upload)} 个文件")
 
-        file_path = Path(source_path)
-        file_name = file_path.name
-        logger.info(f"{self.LOG_TAG}入库完成，准备上传: {file_name}")
-
-        # 异步处理
+        # 异步处理（一个后台线程顺序上传全部文件）
         thread = threading.Thread(
-            target=self._handle_upload,
-            args=(str(file_path),),
+            target=self._handle_upload_batch,
+            args=(to_upload,),
             daemon=True,
         )
         thread.start()
@@ -584,6 +592,14 @@ class EmosUpload(_PluginBase):
             return str(torrent.get("hash") or "").strip() if isinstance(torrent, dict) else ""
         hash_val = getattr(torrent, "hash", None)
         return str(hash_val or "").strip()
+
+    def _handle_upload_batch(self, file_paths: List[str]):
+        """后台线程：顺序上传多个源文件（整季/多文件入库场景）。"""
+        for fp in file_paths:
+            try:
+                self._handle_upload(fp)
+            except Exception as e:
+                logger.error(f"{self.LOG_TAG}上传处理异常 [{fp}]: {e}")
 
     def _handle_upload(self, file_path: str):
         """处理上传逻辑。
