@@ -43,7 +43,7 @@ class EmosUpload(_PluginBase):
     plugin_name = "EMOS上传"
     plugin_desc = "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传，支持 ask/silent 两种模式。"
     plugin_icon = "Emos_A.svg"
-    plugin_version = "1.2.0"
+    plugin_version = "1.2.1"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "emosupload_"
@@ -313,7 +313,7 @@ class EmosUpload(_PluginBase):
                                             "multiple": True,
                                             "chips": True,
                                             "clearable": True,
-                                            "hint": "ask 模式确认消息发送到的渠道；多选则发送到所选渠道，留空则广播所有启用渠道。",
+                                            "hint": "ask 模式确认消息发送到的渠道；多选则发送到所选渠道，留空不发送通知（注意：ask 模式无确认消息将无法确认）。",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -935,15 +935,13 @@ class EmosUpload(_PluginBase):
     def _send_notification(self, message: str):
         """发送通知。
 
-        配置了通知渠道则发送到所选渠道；未配置则广播到所有启用渠道。
+        仅当配置了通知渠道时才发送；未配置（留空）则不发送任何通知。
         """
+        if not self._notify_channel:
+            return
         try:
-            if self._notify_channel:
-                for ch in self._notify_channel:
-                    self.post_message(title="EMOS上传", text=message, channel=ch)
-            else:
-                # 未指定渠道 → channel=None 广播到所有启用渠道
-                self.post_message(title="EMOS上传", text=message)
+            for ch in self._notify_channel:
+                self.post_message(title="EMOS上传", text=message, channel=ch)
         except Exception as e:
             logger.error(f"{self.LOG_TAG}发送通知失败: {e}")
 
