@@ -40,13 +40,12 @@ class EmosUpload(_PluginBase):
     """
     EMOS 上传插件。
 
-    监听 MoviePilot 入库完成事件，将媒体文件上传到
+    定时轮询下载器，检测到种子下载完成即上传其源文件到
     EMOS（Emby 资源站上传分发系统）。
     支持 ask（上传前确认）与 silent（自动上传）两种模式。
     """
-
     plugin_name = "EMOS上传"
-    plugin_desc = "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传，支持 ask/silent 两种模式。"
+    plugin_desc = "MoviePilot 下载完成后自动上传到 EMOS（Emby 资源站上传分发系统），轮询下载器检测下载完成即上传源文件，支持服务器端识别、版本对比、分片并发上传。"
     plugin_icon = "Emos_A.svg"
     plugin_version = "2.1.0"
     plugin_author = "xlmc"
@@ -517,7 +516,7 @@ class EmosUpload(_PluginBase):
             "props": {
                 "type": "warning",
                 "variant": "tonal",
-                "text": "说明：入库完成后自动识别并处理。ask 模式先汇报待确认，silent 模式自动上传。相同版本不重复上传。",
+                "text": "说明：轮询下载器，种子下载完成后自动识别并处理。ask 模式先汇报待确认，silent 模式自动上传。相同版本不重复上传。",
             },
         })
 
