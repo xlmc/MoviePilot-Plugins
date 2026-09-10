@@ -25,9 +25,10 @@ import urllib.error
 from app.core.event import eventmanager, Event
 from app.db.transferhistory_oper import TransferHistoryOper
 from app.helper.downloader import DownloaderHelper
+from app.helper.service import ServiceConfigHelper
 from app.log import logger
 from app.plugins import _PluginBase
-from app.schemas.types import EventType
+from app.schemas.types import EventType, MessageChannel
 
 
 class EmosUpload(_PluginBase):
@@ -42,7 +43,7 @@ class EmosUpload(_PluginBase):
     plugin_name = "EMOS上传"
     plugin_desc = "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传，支持 ask/silent 两种模式。"
     plugin_icon = "Emos_A.svg"
-    plugin_version = "1.1.0"
+    plugin_version = "1.2.0"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "emosupload_"
@@ -77,6 +78,20 @@ class EmosUpload(_PluginBase):
     _pending_uploads: List[dict] = []
     _pending_seq = 0
 
+    # 通知渠道类型（MoviePilot 通知配置的 type）-> MessageChannel 枚举
+    _NOTIFY_TYPE_MAP = {
+        "telegram": MessageChannel.Telegram,
+        "wechat": MessageChannel.Wechat,
+        "feishu": MessageChannel.Feishu,
+        "wechatclawbot": MessageChannel.WechatClawBot,
+        "slack": MessageChannel.Slack,
+        "discord": MessageChannel.Discord,
+        "synologychat": MessageChannel.SynologyChat,
+        "vocechat": MessageChannel.VoceChat,
+        "webpush": MessageChannel.WebPush,
+        "qqbot": MessageChannel.QQ,
+    }
+
     def init_plugin(self, config: dict = None):
         """根据当前配置初始化插件。"""
         config = config or {}
@@ -86,7 +101,7 @@ class EmosUpload(_PluginBase):
         self._skip_tags = config.get("skip_tags") or self._skip_tags
         self._target_parts = int(config.get("target_parts") or self._target_parts)
         self._concurrency = int(config.get("concurrency") or self._concurrency)
-        self._notify_channel = config.get("notify_channel") or []
+        self._notify_channel = self._normalize_channels(config.get("notify_channel"))
         self._onlyonce = bool(config.get("onlyonce"))
 
         # 加载 token
@@ -158,6 +173,24 @@ class EmosUpload(_PluginBase):
                 "description": "获取当前待确认上传的列表",
             },
         ]
+
+    @staticmethod
+    def _get_notify_items() -> List[dict]:
+        """获取 MoviePilot 已启用通知渠道（type 去重），供配置下拉选择。"""
+        items = []
+        try:
+            seen = set()
+            for conf in (ServiceConfigHelper.get_notification_configs() or []):
+                if not getattr(conf, "enabled", False):
+                    continue
+                conf_type = getattr(conf, "type", "") or ""
+                conf_name = getattr(conf, "name", "") or conf_type
+                if conf_type and conf_type not in seen:
+                    seen.add(conf_type)
+                    items.append({"title": conf_name, "value": conf_type})
+        except Exception as e:
+            logger.warning(f"{self.LOG_TAG}读取通知渠道配置失败: {e}")
+        return items
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """返回配置页 JSON 和默认配置模型。"""
@@ -258,6 +291,30 @@ class EmosUpload(_PluginBase):
                                             "model": "concurrency",
                                             "label": "并发数",
                                             "type": "number",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 12},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "notify_channel",
+                                            "label": "通知渠道",
+                                            "items": self._get_notify_items(),
+                                            "multiple": True,
+                                            "chips": True,
+                                            "clearable": True,
+                                            "hint": "ask 模式确认消息发送到的渠道；多选则发送到所选渠道，留空则广播所有启用渠道。",
+                                            "persistent-hint": True,
                                         },
                                     }
                                 ],
@@ -860,14 +917,33 @@ class EmosUpload(_PluginBase):
 
     # ---- 通知 ----
 
+    @staticmethod
+    def _normalize_channels(channels: Any) -> List[Any]:
+        """将配置的渠道类型字符串列表转换为 MessageChannel 枚举列表。"""
+        if not channels:
+            return []
+        result = []
+        seen = set()
+        for ch in (channels if isinstance(channels, (list, tuple)) else [channels]):
+            ch = str(ch).strip()
+            if not ch or ch in seen:
+                continue
+            seen.add(ch)
+            result.append(EmosUpload._NOTIFY_TYPE_MAP.get(ch, ch))
+        return result
+
     def _send_notification(self, message: str):
-        """发送通知。"""
+        """发送通知。
+
+        配置了通知渠道则发送到所选渠道；未配置则广播到所有启用渠道。
+        """
         try:
-            self.post_message(
-                title="EMOS上传",
-                text=message,
-                channel=self._notify_channel[0] if self._notify_channel else None,
-            )
+            if self._notify_channel:
+                for ch in self._notify_channel:
+                    self.post_message(title="EMOS上传", text=message, channel=ch)
+            else:
+                # 未指定渠道 → channel=None 广播到所有启用渠道
+                self.post_message(title="EMOS上传", text=message)
         except Exception as e:
             logger.error(f"{self.LOG_TAG}发送通知失败: {e}")
 
