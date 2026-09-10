@@ -1,4 +1,4 @@
-{
+﻿{
   "QbUploadLimiter": {
     "name": "QB上传限速",
     "description": "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。",
@@ -61,5 +61,17 @@
     },
     "release": true,
     "v3": false
+  },
+  "EmosUpload": {
+    "name": "EMOS上传",
+    "description": "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传。",
+    "labels": "上传,EMOS,Emby,资源站",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Emos_A.svg",
+    "author": "xlmc",
+    "level": 1,
+    "history": {
+      "v1.0.0": "初始版本：支持 TransferComplete 事件监听、服务器端识别、版本对比、分片并发上传、ask/silent 两种模式、上传历史记录"
+    }
   }
 }
