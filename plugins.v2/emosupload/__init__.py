@@ -2,13 +2,14 @@
 EMOS 上传插件（MoviePilot V2）。
 
 功能：
-1. 监听 MoviePilot TransferComplete 事件，入库成功后自动上传到 EMOS；
+1. 定时轮询已选下载器，种子【下载完成】瞬间自动上传源文件到 EMOS；
 2. 通过 EMOS 服务器端接口识别文件，自动匹配剧集信息；
 3. 上传前检查 EMOS 已有资源版本，避免重复上传；
 4. 支持 ask/silent 两种上传模式；
 5. 支持分片并发上传，最大化吞吐。
 """
 
+import datetime
 import json
 import math
 import os
@@ -17,18 +18,22 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import urllib.request
 import urllib.error
 
+import pytz
+from apscheduler.schedulers.background import BackgroundScheduler
+
+from app.core.config import settings
 from app.core.event import eventmanager, Event
-from app.db.transferhistory_oper import TransferHistoryOper
 from app.helper.downloader import DownloaderHelper
 from app.helper.service import ServiceConfigHelper
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType, MessageChannel
+from app.utils.system import SystemUtils
 
 
 class EmosUpload(_PluginBase):
@@ -43,7 +48,7 @@ class EmosUpload(_PluginBase):
     plugin_name = "EMOS上传"
     plugin_desc = "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传，支持 ask/silent 两种模式。"
     plugin_icon = "Emos_A.svg"
-    plugin_version = "1.3.0"
+    plugin_version = "2.0.0"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     plugin_config_prefix = "emosupload_"
@@ -64,8 +69,15 @@ class EmosUpload(_PluginBase):
     _skip_tags = "刷流,保种,seedbox"  # 跳过标签（逗号分隔），命中的种子不上传
     _target_parts = 24          # 目标分片数
     _concurrency = 16           # 并发线程数
+    _poll_interval = 60         # 轮询下载器间隔（秒）
     _notify_channel = []        # 通知渠道
     _onlyonce = False           # 仅运行一次（手动触发）
+
+    # 调度器
+    _scheduler = None
+
+    # 已处理（已触发上传）的种子 hash 集合，防止重复
+    _handled: Set[str] = set()
 
     # 运行时状态
     _upload_lock = threading.Lock()
@@ -93,7 +105,7 @@ class EmosUpload(_PluginBase):
     }
 
     def init_plugin(self, config: dict = None):
-        """根据当前配置初始化插件。"""
+        """根据当前配置初始化插件，并启动下载器轮询任务。"""
         config = config or {}
         self._enabled = bool(config.get("enabled"))
         self._token_path = config.get("token_path") or self._token_path
@@ -101,16 +113,50 @@ class EmosUpload(_PluginBase):
         self._skip_tags = config.get("skip_tags") or self._skip_tags
         self._target_parts = int(config.get("target_parts") or self._target_parts)
         self._concurrency = int(config.get("concurrency") or self._concurrency)
+        self._poll_interval = max(int(config.get("poll_interval") or self._poll_interval), 15)
         self._notify_channel = self._normalize_channels(config.get("notify_channel"))
         self._onlyonce = bool(config.get("onlyonce"))
 
         # 加载 token
         self._load_token()
 
-        # 如果勾选了仅运行一次，手动触发一次
+        # 载入已处理的种子 hash，避免重复上传
+        try:
+            old = self.get_data("handled_hashes") or []
+            self._handled = set(old) if isinstance(old, list) else set()
+        except Exception as e:
+            logger.warning(f"{self.LOG_TAG}读取已处理记录失败: {e}")
+            self._handled = set()
+
+        # 停止旧的调度器
+        try:
+            if self._scheduler:
+                self._scheduler.shutdown(wait=False)
+        except Exception:
+            pass
+        self._scheduler = None
+
+        # 仅运行一次：3 秒后执行一次轮询
         if self._onlyonce:
             self._onlyonce = False
             self.update_config({"onlyonce": False})
+            threading.Thread(target=self._poll_and_process, args=(), daemon=True,
+                             name="EmosOncePoll").start()
+
+        # 启用后：先立即轮询一次，再按间隔周期轮询
+        self._scheduler = BackgroundScheduler(timezone=settings.TZ)
+        if self._enabled:
+            self._poll_and_process()
+            self._scheduler.add_job(
+                func=self._poll_and_process,
+                trigger="interval",
+                seconds=self._poll_interval,
+                coalesce=True,
+                max_instances=1,
+                name="EMOS 轮询下载完成种子",
+            )
+        if self._scheduler.get_jobs():
+            self._scheduler.start()
 
     def _load_token(self):
         """加载 EMOS token。"""
@@ -256,6 +302,27 @@ class EmosUpload(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "poll_interval",
+                                            "label": "轮询间隔（秒）",
+                                            "type": "number",
+                                            "hint": "下载器轮询间隔，检测种子下载完成即上传",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
                                 "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
@@ -330,6 +397,7 @@ class EmosUpload(_PluginBase):
             "skip_tags": "刷流,保种,seedbox",
             "target_parts": 24,
             "concurrency": 16,
+            "poll_interval": 60,
             "notify_channel": [],
             "onlyonce": False,
         }
@@ -456,100 +524,29 @@ class EmosUpload(_PluginBase):
         return page
 
     def stop_service(self):
-        """停用插件时清理资源。"""
-        pass
-
-    # ---- 事件处理 ----
-
-    @eventmanager.register(EventType.TransferComplete)
-    def on_transfer_complete(self, event: Event):
-        """
-        监听入库完成事件。
-
-        当 MoviePilot 完成文件整理入库后，自动上传源文件到 EMOS。
-        """
-        if not self._enabled:
-            return
-
-        if not self._token:
-            logger.warning(f"{self.LOG_TAG}Token 未配置，跳过上传")
-            return
-
-        event_info: dict = event.event_data
-        if not event_info:
-            return
-
-        transferinfo = event_info.get("transferinfo")
-        if not transferinfo:
-            return
-
-        # 收集本次入库的全部源文件（整季/多文件时 file_list 含所有文件，path 仅是第一个）
-        source_files: List[str] = []
-        if getattr(transferinfo, 'file_list', None):
-            for f in transferinfo.file_list:
-                try:
-                    fp = str(f)
-                except Exception:
-                    continue
-                if fp and os.path.isfile(fp) and fp not in source_files:
-                    source_files.append(fp)
-        if not source_files:
-            if getattr(transferinfo, 'path', None) and os.path.isfile(str(transferinfo.path)):
-                source_files.append(str(transferinfo.path))
-
-        if not source_files:
-            logger.warning(f"{self.LOG_TAG}未找到可上传的源文件（源文件可能已被移动）")
-            return
-
-        # 过滤掉带刷流/保种标签的种子
-        to_upload: List[str] = []
-        for fp in source_files:
-            if self._is_skip_tag_source(fp):
-                logger.info(f"{self.LOG_TAG}命中断流/保种标签，跳过: {fp}")
-                continue
-            to_upload.append(fp)
-
-        if not to_upload:
-            logger.info(f"{self.LOG_TAG}无待上传文件（全部被跳过标签过滤）")
-            return
-
-        logger.info(f"{self.LOG_TAG}入库完成，即将上传 {len(to_upload)} 个文件")
-
-        # 异步处理（一个后台线程顺序上传全部文件）
-        thread = threading.Thread(
-            target=self._handle_upload_batch,
-            args=(to_upload,),
-            daemon=True,
-        )
-        thread.start()
-
-    def _is_skip_tag_source(self, source_path: str) -> bool:
-        """
-        判断源文件是否命中断流/保种等跳过标签。
-
-        通过源路径反查 MoviePilot 转移历史拿到 download_hash，
-        再到下载器中读取该种子标签，命中配置的跳过标签则跳过。
-        """
-        if not self._skip_tags:
-            return False
-        skip_list = [t.strip() for t in self._skip_tags.split(",") if t.strip()]
-        if not skip_list:
-            return False
-
-        download_hash = None
+        """停用插件时停止轮询调度器并保存已处理记录。"""
         try:
-            history = TransferHistoryOper().get_by_src(source_path)
-            if history and history.download_hash:
-                download_hash = history.download_hash
-        except Exception as e:
-            logger.warning(f"{self.LOG_TAG}反查转移历史失败: {e}")
+            if self._scheduler:
+                self._scheduler.shutdown(wait=False)
+        except Exception:
+            pass
+        self._scheduler = None
+        # 持久化已处理 hash
+        try:
+            self.save_data("handled_hashes", list(self._handled))
+        except Exception:
+            pass
 
-        if not download_hash:
-            return False
+    # ---- 轮询下载器（下载完成即上传） ----
 
-        # 遍历下载器，查找该 hash 的种子标签
+    def _poll_and_process(self):
+        """轮询已选下载器，检测下载完成的种子并触发上传。"""
+        if not self._enabled or not self._token:
+            return
         try:
             services = DownloaderHelper().get_services()
+            if not services:
+                return
             for _name, service_info in services.items():
                 downloader = service_info.instance
                 if not downloader or downloader.is_inactive():
@@ -558,21 +555,128 @@ class EmosUpload(_PluginBase):
                 try:
                     torrents, error = downloader.get_torrents()
                 except Exception as e:
-                    logger.warning(f"{self.LOG_TAG}获取下载器种子失败: {e}")
+                    logger.warning(f"{self.LOG_TAG}获取下载器 [{_name}] 种子列表失败: {e}")
                     continue
                 if error or not torrents:
                     continue
-                for torrent in torrents:
-                    if self._torrent_hash(torrent, downloader_type) != download_hash:
+                for torrent in torrents or []:
+                    t_hash = self._torrent_hash(torrent, downloader_type)
+                    if not t_hash or t_hash in self._handled:
                         continue
+                    if not self._torrent_completed(torrent, downloader_type):
+                        continue
+                    # 刷流/保种标签直接跳过（不标记，避免长期做种撑大集合）
                     tags = self._torrent_tags(torrent, downloader_type)
-                    if any(tag and tag.lower() in [s.lower() for s in skip_list] for tag in tags):
-                        logger.info(f"{self.LOG_TAG}种子 [{download_hash}] 命中跳过标签: {tags}")
-                        return True
+                    if self._has_skip_tags(tags):
+                        logger.info(f"{self.LOG_TAG}种子 [{t_hash[:8]}] 命中跳过标签 {tags}，不上传")
+                        continue
+                    # 获取该种子下载的媒体文件（源文件）
+                    files = self._torrent_media_files(torrent, downloader_type)
+                    if not files:
+                        logger.warning(f"{self.LOG_TAG}种子 [{t_hash[:8]}] 未找到媒体文件，跳过")
+                        self._mark_handled(t_hash)
+                        continue
+                    self._mark_handled(t_hash)
+                    logger.info(f"{self.LOG_TAG}检测到下载完成种子 [{t_hash[:8]}]，即将上传 {len(files)} 个文件")
+                    self._send_notification(
+                        f"📥 检测到下载完成，正在上传\n"
+                        f"种子: {self._torrent_name(torrent, downloader_type) or t_hash[:8]}\n"
+                        f"文件: {len(files)} 个（源文件）"
+                    )
+                    threading.Thread(
+                        target=self._handle_upload_batch, args=(files,), daemon=True,
+                        name="EmosUploadPoll"
+                    ).start()
         except Exception as e:
-            logger.warning(f"{self.LOG_TAG}读取下载器标签失败: {e}")
+            logger.error(f"{self.LOG_TAG}轮询处理异常: {e}")
 
-        return False
+    def _mark_handled(self, t_hash: str):
+        """标记种子已处理并持久化，防止重复上传。"""
+        if t_hash in self._handled:
+            return
+        self._handled.add(t_hash)
+        try:
+            self.save_data("handled_hashes", list(self._handled)[-5000:])
+        except Exception:
+            pass
+
+    @staticmethod
+    def _torrent_completed(torrent: Any, downloader_type: str) -> bool:
+        """判断种子是否已下载完成。
+
+        qBittorrent 用 progress / completion_on，Transmission 用 percent_done / done_date。
+        """
+        if downloader_type == "qbittorrent":
+            if not isinstance(torrent, dict):
+                return False
+            progress = torrent.get("progress")
+            if progress is not None:
+                try:
+                    return float(progress) >= 1
+                except (TypeError, ValueError):
+                    pass
+            return int(torrent.get("completion_on") or 0) > 0
+        percent = getattr(torrent, "percent_done", None)
+        if percent is not None:
+            try:
+                return float(percent) >= 1
+            except (TypeError, ValueError):
+                pass
+        return int(getattr(torrent, "done_date", 0) or 0) > 0
+
+    def _torrent_media_files(self, torrent: Any, downloader_type: str) -> List[str]:
+        """获取种子下载的媒体文件（源文件）路径列表。"""
+        path = self._torrent_path(torrent, downloader_type)
+        if not path or not os.path.exists(path):
+            return []
+        try:
+            ext = settings.RMT_MEDIAEXT
+            if os.path.isfile(path):
+                return [str(path)] if Path(path).suffix.lower() in ext else []
+            # 目录：枚举媒体文件（含子目录）
+            files = list(SystemUtils.list_files(Path(path), ext) or [])
+            # 过滤样本/预告片等非正片
+            filter_re = re.compile(r'(\bsample\b|\btrailer\b|\bpreview\b|\bextra\b|\bbonus\b)', re.IGNORECASE)
+            return [str(f) for f in files if not filter_re.search(Path(f).name)]
+        except Exception as e:
+            logger.warning(f"{self.LOG_TAG}枚举下载文件失败: {e}")
+            return []
+
+    @staticmethod
+    def _torrent_path(torrent: Any, downloader_type: str) -> str:
+        """获取种子内容路径（文件或目录）。"""
+        try:
+            if downloader_type == "qbittorrent":
+                if not isinstance(torrent, dict):
+                    return ""
+                cp = torrent.get("content_path")
+                if cp:
+                    return str(cp)
+                save = torrent.get("save_path") or ""
+                name = torrent.get("name") or ""
+                return str(Path(save) / name) if save else ""
+            download_dir = (getattr(torrent, "download_dir", None)
+                            or getattr(torrent, "downloadDir", None))
+            name = getattr(torrent, "name", "") or ""
+            return str(Path(str(download_dir)) / name) if download_dir else ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _torrent_name(torrent: Any, downloader_type: str) -> str:
+        """获取种子名称。"""
+        if downloader_type == "qbittorrent":
+            return str(torrent.get("name") or "") if isinstance(torrent, dict) else ""
+        return str(getattr(torrent, "name", None) or "")
+
+    def _has_skip_tags(self, tags: List[str]) -> bool:
+        """判断种子标签是否命中跳过标签。"""
+        if not self._skip_tags or not tags:
+            return False
+        skip_list = [t.strip().lower() for t in self._skip_tags.split(",") if t.strip()]
+        if not skip_list:
+            return False
+        return any(tag and tag.strip().lower() in skip_list for tag in tags)
 
     @staticmethod
     def _torrent_tags(torrent: Any, downloader_type: str) -> List[str]:

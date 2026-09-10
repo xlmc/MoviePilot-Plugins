@@ -64,13 +64,14 @@
   },
   "EmosUpload": {
     "name": "EMOS上传",
-    "description": "MoviePilot 入库后自动上传到 EMOS（Emby 资源站上传分发系统），支持服务器端识别、版本对比、分片并发上传。",
+    "description": "MoviePilot 下载完成后自动上传到 EMOS（Emby 资源站上传分发系统），轮询下载器检测下载完成即上传源文件，支持服务器端识别、版本对比、分片并发上传。",
     "labels": "上传,EMOS,Emby,资源站",
-    "version": "1.3.0",
+    "version": "2.0.0",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Emos_A.svg",
     "author": "xlmc",
     "level": 1,
     "history": {
+      "v2.0.0": "重大变更：触发方式由入库完成事件改为轮询下载器，种子下载完成瞬间即上传源文件；跳过标签改为直接读取下载器种子标签",
       "v1.3.0": "重要修复：整季/多文件入库时只上传第一个文件、其余漏传。现改为遍历全部源文件（file_list）逐个上传",
       "v1.2.2": "修复版本检查接口传参：/api/upload/video/base 改为 URL query 传参加入查询",
       "v1.2.1": "通知渠道留空时不再广播，改为不发送任何通知",
