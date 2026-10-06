@@ -1,6 +1,6 @@
 # xlmc 的 MoviePilot 插件
 
-[MoviePilot](https://github.com/jxxghp/MoviePilot) V2 插件市场结构的插件仓库，目前包含三个插件：
+[MoviePilot](https://github.com/jxxghp/MoviePilot) 插件仓库，同时支持 V2 与 V3 插件市场结构，目前包含三个插件：
 
 | 插件 | 版本 | 简介 |
 | --- | --- | --- |
@@ -10,11 +10,23 @@
 
 ## 安装
 
-在 MoviePilot V2 中进入 **设定 → 插件 → 插件市场**，添加本仓库地址后刷新即可安装：
+在 MoviePilot 中进入 **设定 → 插件 → 插件市场**，添加本仓库地址后刷新即可安装（V2 宿主读取 `package.v2.json`，V3 宿主读取 `package.v3.json`）：
 
 ```
 https://github.com/xlmc/MoviePilot-Plugins
 ```
+
+## V3 支持
+
+V3 宿主（MoviePilot >= 3.0.0）读取 `package.v3.json` 并使用 `plugins.v3/` 下的 V3 专用实现，版本完成主版本跃迁：
+
+| 插件 | V2 版本 | V3 版本 |
+| --- | --- | --- |
+| QB上传限速 | v1.3.19 | v2.0.0 |
+| 源文件联动清理 | v1.0.7 | v2.0.0 |
+| EMOS上传 | v2.1.0 | v3.0.0 |
+
+V3 实现已迁移到 `app.sdk` 稳定接口，并通过 `app.db.oper` 访问宿主数据，不再依赖 `SessionFactory`、宿主 Model 与旧导入路径；V2 实现保留在 `plugins.v2/`，未做改动。
 
 ## QB上传限速 QbUploadLimiter
 
