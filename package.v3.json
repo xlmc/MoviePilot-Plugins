@@ -12,6 +12,19 @@
       "v2.0.0": "V3 适配：迁移到 MoviePilot V3 稳定 SDK（app.sdk.config/logging/plugin/services/network）；站点账号分享率改用 app.db.oper.site.SiteOper、整理入库记录改用 app.db.oper.transferhistory.TransferHistoryOper，下载历史改用 app.db.oper.downloadhistory；通知渠道枚举改用 NotificationChannel；不再依赖 SessionFactory 与宿主 Model。功能与 v1.3.19 保持一致。"
     }
   },
+  "ScrapeFileClean": {
+    "name": "源文件联动清理",
+    "description": "为手动清理下载目录设计：手动删除源文件后，自动联动清理媒体库中对应的硬链接文件、刮削文件（元数据、图片、字幕）与转移记录，支持延迟删除防止误删",
+    "labels": "文件管理,媒体库",
+    "version": "2.0.0",
+    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/clean.png",
+    "author": "xlmc",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v2.0.0": "V3 专用实现：基于官方 1.0.7 生成，导入迁移到 app.sdk（events/logging/plugin），转移记录改用 app.db.oper.transferhistory.TransferHistoryOper，通知消息类型改用 MessageType。功能与 1.0.7 保持一致。"
+    }
+  },
   "EmosUpload": {
     "name": "EMOS上传",
     "description": "MoviePilot 下载完成后自动上传到 EMOS（Emby 资源站上传分发系统），轮询下载器检测下载完成即上传源文件，支持服务器端识别、版本对比、分片并发上传。",

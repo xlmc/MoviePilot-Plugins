@@ -23,11 +23,10 @@ V3 宿主（MoviePilot >= 3.0.0）读取 `package.v3.json` 并使用 `plugins.v3
 | 插件 | V2 版本 | V3 版本 |
 | --- | --- | --- |
 | QB上传限速 | v1.3.19 | v2.0.0 |
+| 源文件联动清理 | v1.0.7 | v2.0.0 |
 | EMOS上传 | v2.1.0 | v3.0.0 |
 
 V3 实现已迁移到 `app.sdk` 稳定接口，并通过 `app.db.oper` 访问宿主数据，不再依赖 `SessionFactory`、宿主 Model 与旧导入路径；V2 实现保留在 `plugins.v2/`，未做改动。
-
-> 源文件联动清理的 V3 实现暂未发布（`package.v3.json` 中没有该条目），V3 市场也不会回退加载它的 V2 实现；V2 版本继续通过 MoviePilot 官方插件市场提供。
 
 ## QB上传限速 QbUploadLimiter
 
@@ -57,7 +56,7 @@ V3 实现已迁移到 `app.sdk` 稳定接口，并通过 `app.db.oper` 访问宿
 - 自动清理只剩刮削文件或完全为空的目录
 - 支持延迟删除（防止媒体重整理误删）、排除目录、过滤关键字与通知
 
-> 本插件已收录进 MoviePilot 官方插件市场（[jxxghp/MoviePilot-Plugins](https://github.com/jxxghp/MoviePilot-Plugins)），建议直接从官方市场安装以获取最新版本。
+> V2 版本已收录进 MoviePilot 官方插件市场（[jxxghp/MoviePilot-Plugins](https://github.com/jxxghp/MoviePilot-Plugins)）；V3 版本（v2.0.0，基于官方 1.0.7 生成）由本仓库 `plugins.v3/scrapefileclean/` 提供，V3 宿主请从本仓库安装。
 
 详细功能与配置说明见 [plugins.v2/scrapefileclean/README.md](plugins.v2/scrapefileclean/README.md)。
 
