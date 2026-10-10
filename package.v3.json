@@ -6,6 +6,7 @@
     "version": "2.1.0",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Qbittorrent_A.png",
     "author": "xlmc",
+    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
     "level": 1,
     "system_version": ">=3.0.0",
     "history": {
@@ -20,6 +21,7 @@
     "version": "2.0.0",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/clean.png",
     "author": "xlmc",
+    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
     "level": 1,
     "system_version": ">=3.0.0",
     "history": {
@@ -33,6 +35,7 @@
     "version": "3.0.0",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Emos_A.svg",
     "author": "xlmc",
+    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
     "level": 1,
     "system_version": ">=3.0.0",
     "history": {

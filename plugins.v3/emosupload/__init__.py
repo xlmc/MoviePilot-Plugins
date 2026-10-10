@@ -49,6 +49,7 @@ class EmosUpload(_PluginBase):
     plugin_version = "3.0.0"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
+    project_url = "https://github.com/xlmc/MoviePilot-Plugins"
     plugin_config_prefix = "emosupload_"
     plugin_order = 40
     auth_level = 1

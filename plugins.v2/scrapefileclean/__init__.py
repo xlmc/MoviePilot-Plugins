@@ -281,6 +281,7 @@ class ScrapeFileClean(_PluginBase):
     plugin_version = "1.0.2"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
+    project_url = "https://github.com/xlmc/MoviePilot-Plugins"
     plugin_config_prefix = "scrapefileclean_"
     plugin_order = 0
     auth_level = 1

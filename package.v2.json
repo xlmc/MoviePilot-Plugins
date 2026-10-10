@@ -6,6 +6,7 @@
     "version": "1.4.0",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Qbittorrent_A.png",
     "author": "xlmc",
+    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
     "level": 1,
     "history": {
       "v1.4.0": "AI 智能限速重做限速值区间：收敛到「该种子未限速时上传峰值砍 2~8 成」（下限=砍 8 成、上限=砍 2 成），正在跑满带宽的种子不会被压成低速，区间内砍多少由大模型结合站点账号分享率与该种子的做种状态判断；新增「本地上传带宽上限（KB/s）」配置，未配置时回退到插件观测到的上传峰值；新增合规下限 100 KB/s（站点恶意限速红线的安全倍数）；线路能力采样优先取 qBittorrent 的 transfer_info.up_info_speed，取不到时回退逐种子求和；AI 接管与限速通知改为仅在该种子首次被限速时发送一次，避免每轮评估刷通知；修复「限速后取消监控超时」按已限速时长直接放行、导致种子重新跑满带宽的问题，现在只在限速值长期高于实际上传速度（速度持续低于限速值 80%）时才取消监控。",
@@ -70,6 +71,7 @@
     "version": "2.1.0",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/Emos_A.svg",
     "author": "xlmc",
+    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
     "level": 1,
     "history": {
       "v2.1.0": "新增聚合通知：一个种子的多个文件合并为一条通知，同一剧名+季仅一行，只显示总大小",
