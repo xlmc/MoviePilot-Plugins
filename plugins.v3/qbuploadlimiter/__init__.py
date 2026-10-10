@@ -44,7 +44,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "3.0.2"
+    plugin_version = "3.0.3"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     project_url = "https://github.com/xlmc/MoviePilot-Plugins"
@@ -93,6 +93,11 @@ class QbUploadLimiter(_PluginBase):
     _limited_hashes: Dict[str, set] = {}
     # 本插件本次会话中设置过限速、停用/卸载时必须恢复的种子：{下载器名称: {种子Hash}}
     _restore_hashes: Dict[str, set] = {}
+    # 已发送过「首次限速/接管」通知的种子：{下载器名称: {种子Hash}}。
+    # 必须持久化：保存配置或更新插件会在同一进程内重入 init_plugin，
+    # _restore_limits 会清空限速归属记录，若不记住已通知的种子，
+    # 已限速种子会被重新当成「首次限速」而重复发送通知
+    _notified_hashes: Dict[str, set] = {}
     # 已下载完成种子上传速度持续低于限速值的起始时间：{下载器名称: {种子Hash: 时间戳}}
     # 用于「下载完成后监控超时」的连续低速计时，速度回升到限速值即清零重新计时
     _complete_slow_since: Dict[str, Dict[str, float]] = {}
@@ -150,6 +155,8 @@ class QbUploadLimiter(_PluginBase):
     # 持久化数据键：跨会话保留待恢复限速种子 / 已取消监控种子
     _RESTORE_DATA_KEY = "restore_hashes"
     _CANCELED_DATA_KEY = "canceled_hashes"
+    # 已通知种子（跨会话保留，避免保存配置/更新插件后重复通知）
+    _NOTIFIED_DATA_KEY = "notified_hashes"
 
     # 通知渠道类型（MoviePilot 通知配置的 type）-> NotificationChannel 枚举
     _NOTIFY_TYPE_MAP = {
@@ -226,6 +233,7 @@ class QbUploadLimiter(_PluginBase):
         # 确保已限速种子停用/卸载时可兜底恢复、已取消监控种子不再被重新干预
         self._restore_hashes = self._load_set_map(self._RESTORE_DATA_KEY)
         self._canceled_hashes = self._load_set_map(self._CANCELED_DATA_KEY)
+        self._notified_hashes = self._load_set_map(self._NOTIFIED_DATA_KEY)
 
         # 停用插件或启用状态下修改配置时，先恢复旧配置下已限速的种子为不限速，
         # 避免清空记录后旧限速丢失归属、停用/卸载时无法恢复
@@ -1166,6 +1174,7 @@ class QbUploadLimiter(_PluginBase):
         # 用数据存储中的旧快照覆盖本次会话的限速归属与取消状态
         self._save_set_map(self._RESTORE_DATA_KEY, self._restore_hashes)
         self._save_set_map(self._CANCELED_DATA_KEY, self._canceled_hashes)
+        self._save_set_map(self._NOTIFIED_DATA_KEY, self._notified_hashes)
         return not failed_names
 
     def _collect_matched_torrents(
@@ -1273,6 +1282,7 @@ class QbUploadLimiter(_PluginBase):
             self._limited_hashes,
             self._restore_hashes,
             self._canceled_hashes,
+            self._notified_hashes,
             self._limited_times,
             self._slow_since,
             self._complete_slow_since,
@@ -1387,9 +1397,12 @@ class QbUploadLimiter(_PluginBase):
                         f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_name}] 分享率达到 {torrent_threshold:g}，"
                         f"已限速 {self._format_limit(torrent_limit)}"
                     )
-                # 通知：仅在该种子首次被本插件限速时发送（AI 接管或常规限速），
-                # 已认领种子的 AI 限速值调整只记日志，避免每轮评估重复刷通知
-                if channels and not owned:
+                # 通知：仅在该种子首次被本插件限速时发送（AI 接管或常规限速）。
+                # 除本轮的归属判断外还要查持久化的「已通知」记录：保存配置或更新插件
+                # 会重入 init_plugin 并清空归属记录，只靠 owned 会把每颗种子重新通知一遍
+                notified = self._notified_hashes.setdefault(service_name, set())
+                if channels and not owned and torrent_hash not in notified:
+                    notified.add(torrent_hash)
                     site = site_cache.get(torrent_hash, "") or self._torrent_site(torrent, downloader_type)
                     if ai_limits and torrent_hash in ai_limits:
                         self._send_event_notify("ai_takeover", site, torrent_name, channels,
