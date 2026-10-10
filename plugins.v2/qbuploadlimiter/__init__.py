@@ -441,9 +441,12 @@ class QbUploadLimiter(_PluginBase):
         第一行：启用插件 / 立即运行一次 / 发送通知（多选渠道）；
         第二行：下载器（多选）/ 站点（多选，按站点筛选）；
         第三行：全局分享率阈值 / 上传速度 / 定时检测间隔；
-        第四行：按站点单独分享率阈值；
-        第五行：下载完成后监控超时 / 限速后取消监控超时；
-        第六行：功能说明。
+        第四行：启用 AI 智能限速 / AI 评估间隔；
+        第五行：AI 账号分享率门槛 / 本地上传带宽上限；
+        第六行：AI 智能限速说明；
+        第七行：按站点单独分享率阈值；
+        第八行：下载完成后监控超时 / 限速后取消监控超时；
+        第九行：功能说明。
         """
         # 下载器下拉：MoviePilot 已配置并启用的 qBittorrent / Transmission
         downloader_items = []
@@ -532,7 +535,7 @@ class QbUploadLimiter(_PluginBase):
                                             "multiple": True,
                                             "chips": True,
                                             "clearable": True,
-                                            "hint": "可多选 MoviePilot 系统设置中已配置并启用的通知渠道；留空表示不发送通知。",
+                                            "hint": "可多选；留空表示不发送通知",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -556,7 +559,7 @@ class QbUploadLimiter(_PluginBase):
                                             "multiple": True,
                                             "chips": True,
                                             "clearable": True,
-                                            "hint": "留空时不会修改任何下载器；请选择 MoviePilot 中已配置的 qBittorrent 或 Transmission 下载器。",
+                                            "hint": "留空时不修改任何下载器",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -575,7 +578,7 @@ class QbUploadLimiter(_PluginBase):
                                             "multiple": True,
                                             "chips": True,
                                             "clearable": True,
-                                            "hint": "留空表示对所有种子生效；勾选站点后，仅对所选站点下载的种子进行上传限速。",
+                                            "hint": "留空表示对所有种子生效；勾选后仅对所选站点限速",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -599,7 +602,7 @@ class QbUploadLimiter(_PluginBase):
                                             "type": "number",
                                             "min": 0.1,
                                             "step": 0.1,
-                                            "hint": "不能为 0 或负数，最多保留 1 位小数（如 1.5），多余位四舍五入",
+                                            "hint": "正数，最多 1 位小数（如 1.5）",
                                             "persistent-hint": True,
                                             "onKeydown": "function (e) { if (e.key === '-') { e.preventDefault(); } }",
                                         },
@@ -615,11 +618,13 @@ class QbUploadLimiter(_PluginBase):
                                         "props": {
                                             "model": "upload_limit",
                                             "label": "上传速度（KB/s）",
-                                            "placeholder": "例如 2000；qB 全局上传限速更低时采用全局值；0 表示不做限速处理",
+                                            "placeholder": "例如 2000；qB 全局更低时采用全局值",
                                             "type": "number",
                                             "min": 0,
                                             "step": 1,
                                             "hide-spin-buttons": True,
+                                            "hint": "达到阈值后的上传速度上限；0 = 不做限速",
+                                            "persistent-hint": True,
                                         },
                                     }
                                 ],
@@ -638,7 +643,7 @@ class QbUploadLimiter(_PluginBase):
                                             "min": 10,
                                             "step": 10,
                                             "hide-spin-buttons": True,
-                                            "hint": "建议设置 30 秒以上",
+                                            "hint": "最短 10 秒，建议 30 秒以上",
                                             "persistent-hint": True,
                                             "onKeydown": "function (e) { if (e.key === '0') { var v = e.target.value || ''; var s = e.target.selectionStart || 0; var en = e.target.selectionEnd || 0; var next = v.slice(0, s) + '0' + v.slice(en); if (/^0+$/.test(next)) { e.preventDefault(); } } }",
                                         },
@@ -652,7 +657,7 @@ class QbUploadLimiter(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
                                         "component": "VSwitch",
@@ -662,7 +667,7 @@ class QbUploadLimiter(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -678,9 +683,14 @@ class QbUploadLimiter(_PluginBase):
                                     }
                                 ],
                             },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -688,7 +698,7 @@ class QbUploadLimiter(_PluginBase):
                                             "model": "ai_site_ratio_threshold",
                                             "label": "AI 账号分享率门槛",
                                             "placeholder": "0 = 不启用",
-                                            "hint": "正整数，0=不启用；站点账号分享率达到该值才对该站种子生效 AI 决策，未达标（或查不到）回退常规阈值规则",
+                                            "hint": "0 = 不启用；未达标的站点回退常规阈值规则",
                                             "persistent-hint": True,
                                             "type": "number",
                                             "min": 0,
@@ -700,7 +710,7 @@ class QbUploadLimiter(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -708,7 +718,7 @@ class QbUploadLimiter(_PluginBase):
                                             "model": "upload_bandwidth",
                                             "label": "本地上传带宽上限（KB/s）",
                                             "placeholder": "0 = 不填，使用插件观测到的上传峰值",
-                                            "hint": "你宽带的实际上行最大值（如 100 Mbps 上行 ≈ 12800 KB/s），仅在启用 AI 智能限速时生效。留 0 时改用插件观测值：每轮读取 qB 的全局上传速度并累计历史最高值（24 小时半衰期衰减）作为线路最大上传速度，用于封顶 AI 单种限速上限、并供大模型判断是否跑满带宽；qB 不记录历史最大上传速度，观测值只是下界，可能低于真实带宽",
+                                            "hint": "如 100 Mbps 上行 ≈ 12800；0 = 用观测峰值",
                                             "persistent-hint": True,
                                             "type": "number",
                                             "min": 0,
@@ -718,6 +728,11 @@ class QbUploadLimiter(_PluginBase):
                                     }
                                 ],
                             },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12},
@@ -727,7 +742,7 @@ class QbUploadLimiter(_PluginBase):
                                         "props": {
                                             "type": "info",
                                             "variant": "tonal",
-                                            "text": "AI 智能限速：调用 MoviePilot 系统设置中已配置的大模型（智能体），无需在本插件重复配置 API 密钥/模型；由大模型根据「种子分享率、上传活跃度、站点账号分享率」逐种子决策限速值与是否限速，仅在种子活跃（有实际上传流量）时评估，休眠种子自动跳过；限速值被收紧到「该种子实测上传能力砍 2~8 成」的区间内（下限=砍 8 成、上限=砍 2 成，并叠加合规底线 100 KB/s），区间内砍多少由大模型结合站点账号分享率与该种子的做种状态判断，正在跑满带宽的种子因此不会被压成低速；上限再与「qB 全局上传限速」「线路最大上传速度」取小——线路最大上传速度优先取你填写的「本地上传带宽上限」，未填时用插件观测到的上传峰值；大模型调用失败、超时或未配置时自动回退常规分享率阈值限速。",
+                                            "text": "AI 智能限速：复用 MoviePilot 系统设置里的大模型，按种子分享率、上传活跃度与站点账号分享率逐种子决策限速值；限速值被收紧到「该种子实测上传能力砍 2~8 成」的区间内并叠加合规底线 100 KB/s，正在跑满带宽的种子不会被压成低速；上限再与 qB 全局限速、线路最大上传速度取小。大模型未配置、调用失败或输出解析失败时自动回退常规分享率阈值限速。",
                                         },
                                     }
                                 ],
@@ -775,7 +790,7 @@ class QbUploadLimiter(_PluginBase):
                                             "min": 0,
                                             "step": 1,
                                             "hide-spin-buttons": True,
-                                            "hint": "种子下载完成后，插件持续监控其上传速度；上传速度持续低于限速值达到设定秒数时，取消监控并立即恢复该种子不限速",
+                                            "hint": "0 = 不启用；下载完成后速度持续不达标即取消监控",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -795,7 +810,7 @@ class QbUploadLimiter(_PluginBase):
                                             "min": 0,
                                             "step": 1,
                                             "hide-spin-buttons": True,
-                                            "hint": "种子被限速后持续监控上传速度，只有速度持续低于限速值 80% 达到设定秒数时才取消监控并恢复不限速；速度回升到限速值即重新计时。不会因为「已经限速多久」而放行，限速生效期间一直保持限速",
+                                            "hint": "0 = 不启用；速度持续低于限速值 80% 才取消监控",
                                             "persistent-hint": True,
                                         },
                                     }
@@ -815,7 +830,7 @@ class QbUploadLimiter(_PluginBase):
                                         "props": {
                                             "type": "info",
                                             "variant": "tonal",
-                                            "text": "本插件仅处理 MoviePilot 已整理入库成功的种子：种子入库成功前不监控、不限速（等同于插件未开启），入库成功后按分享率逐种子限速——分享率（上传量/下载量）达到全局或站点单独设置的正数阈值（>0，最多 1 位小数）后，其上传速度将被限制为设定值（KB/s）。站点单独阈值使用「站点名称=阈值」格式，一行一个；未配置或无法识别站点时使用全局阈值。上传速度填 0 表示不做限速处理；两个监控超时填 0 表示不启用对应功能。支持 qBittorrent 和 Transmission。",
+                                            "text": "本插件仅处理 MoviePilot 已整理入库成功的种子：入库成功前不监控、不限速，入库成功后分享率（上传量/下载量）达到全局或站点单独阈值（>0，最多 1 位小数）即限制其上传速度为设定值（KB/s）；站点未配置单独阈值或无法识别时回退全局阈值。上传速度填 0 表示不做限速处理，两个监控超时填 0 表示不启用。支持 qBittorrent 与 Transmission。",
                                         },
                                     }
                                 ],
