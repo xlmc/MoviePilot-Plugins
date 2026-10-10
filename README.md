@@ -22,7 +22,7 @@ V3 宿主（MoviePilot >= 3.0.0）读取 `package.v3.json` 并使用 `plugins.v3
 
 | 插件 | V2 版本 | V3 版本 |
 | --- | --- | --- |
-| QB上传限速 | v1.3.19 | v2.0.0 |
+| QB上传限速 | v1.3.19 | v2.1.0 |
 | 源文件联动清理 | v1.0.7 | v2.0.0 |
 | EMOS上传 | v2.1.0 | v3.0.0 |
 
@@ -42,7 +42,7 @@ V3 实现已迁移到 `app.sdk` 稳定接口，并通过 `app.db.oper` 访问宿
 - AI 智能限速（可选）：复用 MoviePilot 系统设置的大模型，按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速，支持每轮复核加限/减限/解限；未配置或调用失败自动回退阈值规则
 - AI 生效后点击插件卡片可进入种子状态详情页（统计 + 每种子明细）
 
-详细功能与配置说明见 [plugins.v2/qbuploadlimiter/README.md](plugins.v2/qbuploadlimiter/README.md)。
+详细功能与配置说明见 [plugins.v2/qbuploadlimiter/README.md](plugins.v2/qbuploadlimiter/README.md)（V2）与 [plugins.v3/qbuploadlimiter/README.md](plugins.v3/qbuploadlimiter/README.md)（V3；AI 限速区间、本地上传带宽上限等 V3 行为以该文档为准）。
 
 ## 源文件联动清理 ScrapeFileClean
 
