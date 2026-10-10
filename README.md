@@ -4,7 +4,7 @@
 
 | 插件 | 版本 | 简介 |
 | --- | --- | --- |
-| <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v1.4.3 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速 |
+| <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v1.4.4 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速 |
 | <img src="icons/clean.png" width="26" align="top"/> **[源文件联动清理](#源文件联动清理-scrapefileclean)** | v1.0.7 | 手动删除源文件后，自动联动清理硬链接、刮削文件与转移记录 |
 | <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emupload)** | v2.1.0 | MoviePilot 下载完成后自动上传源文件到 EMOS 资源站 |
 
@@ -22,7 +22,7 @@ V3 宿主（MoviePilot >= 3.0.0）读取 `package.v3.json` 并使用 `plugins.v3
 
 | 插件 | V2 版本 | V3 版本 |
 | --- | --- | --- |
-| QB上传限速 | v1.4.3 | v3.0.3 |
+| QB上传限速 | v1.4.4 | v3.0.4 |
 | 源文件联动清理 | v1.0.7（官方仓库） | v2.0.0 |
 | EMOS上传 | v2.1.0 | v3.0.0 |
 

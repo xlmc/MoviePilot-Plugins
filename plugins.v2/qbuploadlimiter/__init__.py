@@ -45,7 +45,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "1.4.3"
+    plugin_version = "1.4.4"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     project_url = "https://github.com/xlmc/MoviePilot-Plugins"
@@ -451,9 +451,8 @@ class QbUploadLimiter(_PluginBase):
         第三行：全局分享率阈值 / 上传速度 / 定时检测间隔；
         第四行：启用 AI 智能限速 / AI 评估间隔；
         第五行：AI 账号分享率门槛 / 本地上传带宽上限；
-        第六行：AI 智能限速说明；
-        第七行：按站点单独分享率阈值；
-        第八行：下载完成后监控超时 / 限速后取消监控超时。
+        第六行：按站点单独分享率阈值；
+        第七行：下载完成后监控超时 / 限速后取消监控超时。
         """
         # 下载器下拉：MoviePilot 已配置并启用的 qBittorrent / Transmission
         downloader_items = []
@@ -718,25 +717,6 @@ class QbUploadLimiter(_PluginBase):
                                             "min": 0,
                                             "step": 1,
                                             "hide-spin-buttons": True,
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VAlert",
-                                        "props": {
-                                            "type": "info",
-                                            "variant": "tonal",
-                                            "text": "AI 智能限速：复用 MoviePilot 系统设置里的大模型，按种子分享率、上传活跃度与站点账号分享率逐种子决策限速值；限速值被收紧到「该种子实测上传能力砍 2~8 成」的区间内并叠加合规底线 100 KB/s，正在跑满带宽的种子不会被压成低速；上限再与 qB 全局限速、线路最大上传速度取小。大模型未配置、调用失败或输出解析失败时自动回退常规分享率阈值限速。",
                                         },
                                     }
                                 ],
