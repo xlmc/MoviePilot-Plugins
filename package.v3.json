@@ -47,19 +47,5 @@
     "history": {
       "v3.0.0": "V3 适配：迁移到 MoviePilot V3 稳定 SDK（app.sdk.config/events/logging/plugin/services/utilities）；通知渠道枚举改用 NotificationChannel。功能与 v2.1.0 保持一致。"
     }
-  },
-  "MTeamLoginReminder": {
-    "name": "馒头登录提醒",
-    "description": "读取 M-Team 账号的真实登录时间（lastLogin），按周期提前提醒登录：默认 30 天周期、提前 7 天开始，每天早上 8 点提醒一次；检测到新登录后发送结束通知并进入下一周期。站点规则：未封存账号连续 40 天不登录删除，自动签到/第三方工具访问不算登入。",
-    "labels": "站点,通知,登录,保号",
-    "version": "1.0.0",
-    "icon": "signin.png",
-    "author": "xlmc",
-    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
-    "level": 1,
-    "system_version": ">=3.0.0",
-    "history": {
-      "v1.0.0": "首个版本：调用 M-Team 开放 API 读取账号真实登录时间（memberStatus.lastLogin），按周期提前提醒登录——默认 30 天周期、提前 7 天（第 23 天）开始，每天早上 8 点提醒一次；检测到新登录后发送「已恢复，不再通知」并告知下一轮提醒日期，随后进入下一周期。支持多选通知渠道；ApiKey 自动读取 MoviePilot 站点配置。"
-    }
   }
 }

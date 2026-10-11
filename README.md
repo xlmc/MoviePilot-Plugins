@@ -9,7 +9,6 @@
 | <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v2.0.0 | v3.1.0 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速 |
 | <img src="icons/clean.png" width="26" align="top"/> **[源文件联动清理](#源文件联动清理-scrapefileclean)** | v1.0.7（官方仓库） | v2.0.0 | 手动删除源文件后，自动联动清理硬链接、刮削文件与转移记录 |
 | <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emosupload)** | v2.1.0 | v3.0.0 | MoviePilot 下载完成后自动上传源文件到 EMOS 资源站 |
-| <img src="icons/signin.png" width="26" align="top"/> **[馒头登录提醒](#馒头登录提醒-mteamloginreminder)** | — | v1.0.0 | 读取 M-Team 真实登录时间，按周期提前提醒登录 |
 
 ## 安装
 
@@ -101,14 +100,3 @@ MoviePilot 入库完成后自动将源文件上传到 EMOS（Emby 资源站上�
 ## 许可
 
 [GPL-3.0](LICENSE)
-
-## 馒头登录提醒 MTeamLoginReminder
-
-读取 M-Team（馒头）账号的**真实登录时间**，在临近掉号线之前提醒你登录。站点规则是「未封存账号连续 40 天不登录删除」，且公告明确写了**第三方工具间接存取不算登入**——所以 MoviePilot 的自动签到无效，必须真人用浏览器登录。
-
-- 默认 **30 天**周期、**提前 7 天**（第 23 天）开始提醒，**每天早上 8 点**提醒一次（均可配置）
-- 检测到**新登录**后发送「已恢复，不再通知」并告知下一轮提醒日期，随后进入下一周期
-- 登录时间取自 M-Team 开放 API 的 memberStatus.lastLogin，ApiKey 自动读取 MoviePilot 站点配置
-- 通知渠道可多选；插件不做自动签到，只负责提醒本人登录
-
-详细说明见 [plugins.v3/mteamloginreminder/README.md](plugins.v3/mteamloginreminder/README.md)（V3 专用，无 V2 实现）。
