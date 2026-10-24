@@ -17,7 +17,9 @@
   联动删除硬链接、刮削文件与转移记录，并通过 DownloadFileDeleted 事件联动
   下载器助手删除种子（可选）；
 - 延迟删除模式下，删除事件会先进入队列，等待一段时间后再校验执行，防止
-  媒体重整理/重命名导致的误删。
+  媒体重整理/重命名导致的误删；
+- 可选按被删除文件的完整路径匹配并删除媒体服务器（Emby / Jellyfin）中的对应
+  条目，避免媒体库残留已失效的条目与海报。
 """
 import os
 import platform
@@ -33,7 +35,9 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 from app.db.oper.transferhistory import TransferHistoryOper
 from app.sdk.events import eventmanager
 from app.sdk.logging import logger
+from app.sdk.network import RequestUtils
 from app.sdk.plugin import _PluginBase
+from app.sdk.services import MediaServerHelper
 from app.schemas.types import EventType, MessageType
 
 # 全局状态锁，保护 file_state 的读写
@@ -366,9 +370,9 @@ class ScrapeFileClean(_PluginBase):
 
     # 插件元信息
     plugin_name = "源文件联动清理"
-    plugin_desc = "为手动清理下载目录设计：手动删除源文件后，自动联动清理媒体库中对应的硬链接文件、刮削文件（元数据、图片、字幕）与转移记录，支持延迟删除防止误删"
+    plugin_desc = "为手动清理下载目录设计：手动删除源文件后，自动联动清理媒体库中对应的硬链接文件、刮削文件（元数据、图片、字幕）与转移记录，支持延迟删除防止误删，可选按路径删除媒体服务器（Emby / Jellyfin）中的对应条目"
     plugin_icon = "clean.png"
-    plugin_version = "2.0.0"
+    plugin_version = "2.1.0"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     project_url = "https://github.com/xlmc/MoviePilot-Plugins"
@@ -385,6 +389,10 @@ class ScrapeFileClean(_PluginBase):
     ]
     # 刮削/媒体服务器生成的关联目录后缀
     SCRAP_DIR_SUFFIXES = [".trickplay"]
+    # 支持删除条目的媒体服务器类型
+    SUPPORTED_MEDIASERVER_TYPES = ("emby", "jellyfin")
+    # 媒体服务器条目索引缓存有效期（秒）
+    MEDIASERVER_INDEX_TTL = 300
 
     # 配置项
     monitor_dirs = ""
@@ -399,7 +407,10 @@ class ScrapeFileClean(_PluginBase):
     _delete_history = False
     _delayed_deletion = True
     _delay_seconds = 30
+    _delete_mediaserver = False
     _custom_scrap_extensions: List[str] = []
+    # 媒体服务器条目索引缓存 {服务名: (缓存时间, {归一化路径: (条目ID, 条目类型)})}
+    _mediaserver_index_cache: Dict[str, Tuple[float, Dict[str, Tuple[str, str]]]] = {}
 
     _transferhistory: Optional[TransferHistoryOper] = None
     _observer: List[Any] = []
@@ -443,6 +454,7 @@ class ScrapeFileClean(_PluginBase):
         self._delete_scrap_infos = bool(config.get("delete_scrap_infos"))
         self._delete_torrents = bool(config.get("delete_torrents"))
         self._delete_history = bool(config.get("delete_history"))
+        self._delete_mediaserver = bool(config.get("delete_mediaserver"))
         self._delayed_deletion = bool(config.get("delayed_deletion", True))
         self.monitor_dirs = config.get("monitor_dirs") or ""
         self.exclude_dirs = config.get("exclude_dirs") or ""
@@ -461,6 +473,7 @@ class ScrapeFileClean(_PluginBase):
         self._transferhistory = TransferHistoryOper()
         self.deletion_queue = []
         self.file_state = {}
+        self._mediaserver_index_cache = {}
 
         if not self._enabled:
             logger.info("源文件联动清理插件未启用")
@@ -639,15 +652,30 @@ class ScrapeFileClean(_PluginBase):
         except Exception as e:
             logger.error(f"删除硬链接文件发生错误：{str(e)} - {traceback.format_exc()}")
 
+        # 媒体服务器条目清理：路径关联副作用，需包含源文件本身（下载目录即媒体库时没有硬链接）
+        mediaserver_deleted: List[str] = []
+        if self._delete_mediaserver and not skip_path_effects:
+            mediaserver_deleted = self._delete_mediaserver_items(
+                [file_path] + [Path(path) for path in deleted_files]
+            )
+
         # 通知
-        if self._notify and deleted_files:
+        if self._notify and (deleted_files or mediaserver_deleted):
             self.post_message(
                 mtype=MessageType.SiteMessage,
                 title="🧹 源文件联动清理",
-                text=self._build_notification_text(file_path, deleted_files, delayed=False),
+                text=self._build_notification_text(
+                    file_path, deleted_files, delayed=False, mediaserver_deleted=mediaserver_deleted
+                ),
             )
 
-    def _build_notification_text(self, src_path: Path, deleted_files: List[str], delayed: bool) -> str:
+    def _build_notification_text(
+        self,
+        src_path: Path,
+        deleted_files: List[str],
+        delayed: bool,
+        mediaserver_deleted: Optional[List[str]] = None,
+    ) -> str:
         """组装清理结果通知文本"""
         parts = [f"🗂️ 源文件：{src_path}"]
         if len(deleted_files) == 1:
@@ -660,8 +688,140 @@ class ScrapeFileClean(_PluginBase):
             parts.append("🌱 已联动删除种子")
         if self._delete_scrap_infos:
             parts.append("🖼️ 已清理刮削文件")
+        if mediaserver_deleted:
+            parts.append(f"🗑️ 已删除 {len(mediaserver_deleted)} 个媒体服务器条目")
         prefix = "⏰ 延迟删除完成" if delayed else "⚡ 立即删除完成"
         return f"{prefix}\n\n" + "\n".join(parts)
+
+    # -----------------------------------------------------------
+    # 媒体服务器条目清理
+    # -----------------------------------------------------------
+    @staticmethod
+    def _normalize_media_path(path: Any) -> str:
+        """归一化路径，用于与媒体服务器中的条目路径比对"""
+        text = str(path or "").strip().replace("\\", "/")
+        return text.rstrip("/").lower() if text else ""
+
+    @staticmethod
+    def _mediaserver_endpoint(service: Any) -> Optional[Tuple[str, str]]:
+        """从媒体服务器实例/配置中取出基础地址与 API 密钥"""
+        conf = getattr(service, "config", None)
+        conf_data = getattr(conf, "config", None) or {}
+        instance = getattr(service, "instance", None)
+        host = str(getattr(instance, "_host", "") or conf_data.get("host") or "").strip()
+        apikey = str(getattr(instance, "_apikey", "") or conf_data.get("apikey") or "").strip()
+        if not host or not apikey:
+            return None
+        if not host.endswith("/"):
+            host = f"{host}/"
+        return host, apikey
+
+    def _mediaserver_index(
+        self, name: str, base_url: str, apikey: str, prefix: str, refresh: bool = False
+    ) -> Dict[str, Tuple[str, str]]:
+        """读取媒体库条目索引 {归一化路径: (条目ID, 条目类型)}，按有效期缓存"""
+        cached = self._mediaserver_index_cache.get(name)
+        if cached and not refresh and time.time() - cached[0] < self.MEDIASERVER_INDEX_TTL:
+            return cached[1]
+
+        res = RequestUtils().get_res(
+            f"{base_url}{prefix}Items",
+            params={
+                "Recursive": "true",
+                "IncludeItemTypes": "Movie,Episode",
+                "Fields": "Path",
+                "EnableTotalRecordCount": "false",
+                "Limit": "100000",
+                "api_key": apikey,
+            },
+        )
+        if not res:
+            logger.error(f"读取媒体服务器 {name} 的条目列表失败，跳过条目清理")
+            return cached[1] if cached else {}
+
+        try:
+            items = (res.json() or {}).get("Items") or []
+        except Exception:
+            items = []
+
+        index: Dict[str, Tuple[str, str]] = {}
+        for item in items:
+            item_id = item.get("Id")
+            path = self._normalize_media_path(item.get("Path"))
+            if item_id and path:
+                index[path] = (item_id, item.get("Type") or "")
+        self._mediaserver_index_cache[name] = (time.time(), index)
+        logger.debug(f"媒体服务器 {name} 条目索引已更新，共 {len(index)} 条")
+        return index
+
+    def _delete_mediaserver_items(self, paths: List[Path]) -> List[str]:
+        """按路径删除媒体服务器（Emby / Jellyfin）中的对应条目"""
+        targets: List[str] = []
+        for path in paths:
+            text = self._normalize_media_path(path)
+            if not text or text in targets:
+                continue
+            # 文件仍存在时不处理，避免误删仍在库中的条目
+            try:
+                if Path(path).exists():
+                    continue
+            except OSError:
+                pass
+            targets.append(text)
+        if not targets:
+            return []
+
+        try:
+            services = MediaServerHelper().get_services() or {}
+        except Exception as e:
+            logger.error(f"读取媒体服务器配置失败，跳过条目清理：{str(e)}")
+            return []
+
+        removed: List[str] = []
+        for name, service in services.items():
+            if getattr(service, "type", None) not in self.SUPPORTED_MEDIASERVER_TYPES:
+                continue
+            endpoint = self._mediaserver_endpoint(service)
+            if not endpoint:
+                logger.warn(f"媒体服务器 {name} 缺少地址或密钥，跳过条目清理")
+                continue
+            base_url, apikey = endpoint
+            # Emby 的接口路径带 emby 前缀，Jellyfin 直接是根路径
+            prefix = "emby/" if service.type == "emby" else ""
+            index = self._mediaserver_index(name, base_url, apikey, prefix)
+            refreshed = False
+            for target in targets:
+                entry = index.get(target)
+                if not entry and not refreshed:
+                    # 缓存未命中时刷新一次，覆盖新入库或路径变更的条目
+                    index = self._mediaserver_index(name, base_url, apikey, prefix, refresh=True)
+                    refreshed = True
+                    entry = index.get(target)
+                if not entry:
+                    logger.debug(f"媒体服务器 {name} 未找到路径对应的条目：{target}")
+                    continue
+                item_id, item_type = entry
+                if self._delete_mediaserver_item(name, base_url, apikey, prefix, item_id, item_type):
+                    removed.append(f"{name} {item_type or '条目'} {target}")
+                    index.pop(target, None)
+        return removed
+
+    @staticmethod
+    def _delete_mediaserver_item(
+        name: str, base_url: str, apikey: str, prefix: str, item_id: str, item_type: str
+    ) -> bool:
+        """删除单个媒体服务器条目"""
+        try:
+            res = RequestUtils().delete_res(f"{base_url}{prefix}Items/{item_id}", params={"api_key": apikey})
+        except Exception as e:
+            logger.error(f"删除媒体服务器 {name} 条目 {item_id} 出错：{str(e)}")
+            return False
+        status_code = getattr(res, "status_code", None)
+        if status_code in (200, 204):
+            logger.info(f"已删除媒体服务器 {name} 的{item_type or '条目'}：{item_id}")
+            return True
+        logger.error(f"删除媒体服务器 {name} 条目 {item_id} 失败：{status_code or '无响应'}")
+        return False
 
     # -----------------------------------------------------------
     # 延迟删除
@@ -1101,6 +1261,36 @@ class ScrapeFileClean(_PluginBase):
                             },
                         ],
                     },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {"model": "delete_mediaserver", "label": "删除媒体服务器条目"},
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 8},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "warning",
+                                            "variant": "tonal",
+                                            "density": "compact",
+                                            "text": "按被删除文件的完整路径匹配 Emby / Jellyfin 媒体库条目并删除，避免媒体库残留失效条目与海报；仅在文件确实不存在时才删除。",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
                     # 监控目录配置
                     {
                         "component": "VRow",
@@ -1243,6 +1433,7 @@ class ScrapeFileClean(_PluginBase):
             "delete_scrap_infos": False,
             "delete_torrents": False,
             "delete_history": False,
+            "delete_mediaserver": False,
             "delayed_deletion": True,
             "delay_seconds": 30,
             "monitor_dirs": "",

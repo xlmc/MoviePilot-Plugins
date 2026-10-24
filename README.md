@@ -7,7 +7,7 @@
 | 插件 | V2 版本 | V3 版本 | 简介 |
 | --- | --- | --- | --- |
 | <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v2.0.0 | v3.1.0 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速 |
-| <img src="icons/clean.png" width="26" align="top"/> **[源文件联动清理](#源文件联动清理-scrapefileclean)** | v1.0.7（官方仓库） | v2.0.0 | 手动删除源文件后，自动联动清理硬链接、刮削文件与转移记录 |
+| <img src="icons/clean.png" width="26" align="top"/> **[源文件联动清理](#源文件联动清理-scrapefileclean)** | v1.0.7（官方仓库） | v2.1.0 | 手动删除源文件后，自动联动清理硬链接、刮削文件、转移记录与媒体服务器条目 |
 | <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emosupload)** | v2.1.0 | v3.0.0 | MoviePilot 下载完成后自动上传源文件到 EMOS 资源站 |
 | <img src="icons/playbackbestversion.svg" width="26" align="top"/> **[播放进度洗版](#播放进度洗版-playbackbestversion)** | v2.0.0 | v3.0.0 | 按媒体服务器上的分集播放进度决定是否继续洗版，看过的集不再搜索更高版本 |
 
@@ -77,8 +77,9 @@ V3 宿主（MoviePilot >= 3.0.0）读取 package.v3.json 与 plugins.v3/；V2 �
 - 联动删除对应转移记录，避免历史记录残留；可选联动删除种子（配合下载器助手）
 - 自动清理只剩刮削文件或完全为空的目录
 - 支持延迟删除（防止媒体重整理误删）、排除目录、过滤关键字与通知
+- **删除媒体服务器条目**（可选）：按被删除文件的完整路径匹配并删除 Emby / Jellyfin 媒体库中的对应条目，避免媒体库残留失效条目与海报；仅在文件确实不存在时才删除
 
-> V2 版本已收录进 MoviePilot 官方插件市场（[jxxghp/MoviePilot-Plugins](https://github.com/jxxghp/MoviePilot-Plugins)）；V3 版本（v2.0.0，基于官方 1.0.7 生成）由本仓库 plugins.v3/scrapefileclean/ 提供，V3 宿主请从本仓库安装。
+> V2 版本已收录进 MoviePilot 官方插件市场（[jxxghp/MoviePilot-Plugins](https://github.com/jxxghp/MoviePilot-Plugins)）；V3 版本（v2.1.0，基于官方 1.0.7 生成）由本仓库 plugins.v3/scrapefileclean/ 提供，V3 宿主请从本仓库安装。
 
 详细功能与配置说明见 [plugins.v3/scrapefileclean/README.md](plugins.v3/scrapefileclean/README.md)（本仓库只分发 V3 实现，V2 实现由官方仓库维护）。
 

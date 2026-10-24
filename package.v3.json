@@ -22,15 +22,16 @@
   },
   "ScrapeFileClean": {
     "name": "源文件联动清理",
-    "description": "为手动清理下载目录设计：手动删除源文件后，自动联动清理媒体库中对应的硬链接文件、刮削文件（元数据、图片、字幕）与转移记录，支持延迟删除防止误删",
-    "labels": "文件管理,媒体库",
-    "version": "2.0.0",
+    "description": "为手动清理下载目录设计：手动删除源文件后，自动联动清理媒体库中对应的硬链接文件、刮削文件（元数据、图片、字幕）与转移记录，支持延迟删除防止误删；可选按完整路径删除媒体服务器（Emby / Jellyfin）中的对应条目，避免媒体库残留失效条目与海报",
+    "labels": "文件管理,媒体库,Emby,Jellyfin",
+    "version": "2.1.0",
     "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/clean.png",
     "author": "xlmc",
     "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
     "level": 1,
     "system_version": ">=3.0.0",
     "history": {
+      "v2.1.0": "新增「删除媒体服务器条目」开关：源文件被删除后，按被删除文件的完整路径匹配并删除 Emby / Jellyfin 媒体库中的对应条目（DELETE /Items/{id}），避免媒体库残留失效条目与海报；条目索引按 300 秒缓存、未命中时刷新一次，文件仍存在时跳过以防误删，通知中汇总删除数量。",
       "v2.0.0": "V3 专用实现：基于官方 1.0.7 生成，导入迁移到 app.sdk（events/logging/plugin），转移记录改用 app.db.oper.transferhistory.TransferHistoryOper，通知消息类型改用 MessageType。功能与 1.0.7 保持一致。"
     }
   },
