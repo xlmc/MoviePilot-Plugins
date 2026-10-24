@@ -9,6 +9,7 @@
 | <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v2.0.0 | v3.1.0 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速 |
 | <img src="icons/clean.png" width="26" align="top"/> **[源文件联动清理](#源文件联动清理-scrapefileclean)** | v1.0.7（官方仓库） | v2.0.0 | 手动删除源文件后，自动联动清理硬链接、刮削文件与转移记录 |
 | <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emosupload)** | v2.1.0 | v3.0.0 | MoviePilot 下载完成后自动上传源文件到 EMOS 资源站 |
+| <img src="icons/playbackawarebestversion.svg" width="26" align="top"/> **[播放进度洗版守卫](#播放进度洗版守卫-playbackawarebestversion)** | v2.0.0 | v3.0.0 | 按媒体服务器上的分集播放进度决定是否继续洗版，看过的集不再搜索更高版本 |
 
 ## 安装
 
@@ -96,6 +97,23 @@ MoviePilot 入库完成后自动将源文件上传到 EMOS（Emby 资源站上�
 - 通知集成：上传结果通过 MoviePilot 通知渠道推送
 
 详细功能与配置说明见 [plugins.v2/emosupload/README.md](plugins.v2/emosupload/README.md)（V2）与 [plugins.v3/emosupload/README.md](plugins.v3/emosupload/README.md)（V3）。
+
+## 播放进度洗版守卫 PlaybackAwareBestVersion
+
+按媒体服务器（Emby / Jellyfin）上的**分集播放进度**决定订阅是否继续洗版：某集已经看过，就不必再为它升级替换。
+
+洗版（best_version）的完成判定由宿主的「分集优先级」驱动——某集的 `episode_priority` 等于 100 即视为该集洗版完成、不再搜索更高版本（电影看 `current_priority`）。插件读取播放进度，把看过的集写成 100，宿主的洗版流程自然跳过它们。插件**只读**媒体服务器、**只写**订阅表：不删除文件、不下载、不触发整理。
+
+主要特性：
+
+- 三种判定方式：播放进度达到阈值（默认 90%）、只要播放过、标记为已看
+- 电视剧按集写入（`episode_priority`），电影按整部写入（`current_priority`）
+- 只改命中的集并保留既有优先级，同时按宿主口径把整部优先级重算为目标集最小值，不会放宽洗版准入
+- 多服务器按顺序匹配（第一个找到条目的服务器生效），同一服务器上的多个用户进度合并取更高
+- 试运行模式：只写日志不写库，先看清会发生什么
+- 可选通知与定时检测（默认 30 分钟），支持手动「立即运行一次」
+
+详细功能与配置说明见 [plugins.v2/playbackawarebestversion/README.md](plugins.v2/playbackawarebestversion/README.md)（V2）与 [plugins.v3/playbackawarebestversion/README.md](plugins.v3/playbackawarebestversion/README.md)（V3）。
 
 ## 许可
 

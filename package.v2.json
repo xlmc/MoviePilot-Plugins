@@ -90,5 +90,19 @@
       "v1.1.0": "新增 ask 模式确认流程（识别后汇报待确认，用户确认后才上传）；新增跳过标签功能（刷流/保种/seedbox 标签的种子不自动上传）；修正源文件路径字段获取方式",
       "v1.0.0": "初始版本：支持 TransferComplete 事件监听、服务器端识别、版本对比（分辨率+文件大小）、分片并发上传、ask/silent 两种模式、上传历史记录"
     }
+  },
+  "PlaybackAwareBestVersion": {
+    "v3": false,
+    "name": "播放进度洗版守卫",
+    "description": "按媒体服务器（Emby / Jellyfin）的分集播放进度决定订阅是否继续洗版：进度达到阈值（或播过、或标记已看）的集写成洗版完成优先级，宿主不再为它搜索更高版本；电影命中则整部停止洗版。支持多服务器、多用户合并、试运行与通知。",
+    "labels": "订阅,洗版,媒体服务器,Emby,Jellyfin",
+    "version": "2.0.0",
+    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/playbackawarebestversion.svg",
+    "author": "xlmc",
+    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
+    "level": 1,
+    "history": {
+      "v2.0.0": "首个版本：按 Emby / Jellyfin 的分集播放进度决定是否继续洗版——命中的集写入 episode_priority=100（宿主口径的「该集洗版完成」）并按目标集最小值重算 current_priority，电影命中写 current_priority=100 整部停止洗版；支持进度阈值 / 播过即算 / 标记已看三种判定、多服务器多用户合并、试运行与通知。功能与 V3 版本 v3.0.0 一致，导入路径为 app.core.config / app.helper / app.plugins / app.log / app.db.subscribe_oper。"
+    }
   }
 }
