@@ -91,13 +91,13 @@
       "v1.0.0": "初始版本：支持 TransferComplete 事件监听、服务器端识别、版本对比（分辨率+文件大小）、分片并发上传、ask/silent 两种模式、上传历史记录"
     }
   },
-  "PlaybackAwareBestVersion": {
+  "PlaybackBestVersion": {
     "v3": false,
-    "name": "播放进度洗版守卫",
+    "name": "播放进度洗版",
     "description": "按媒体服务器（Emby / Jellyfin）的分集播放进度决定订阅是否继续洗版：进度达到阈值（或播过、或标记已看）的集写成洗版完成优先级，宿主不再为它搜索更高版本；电影命中则整部停止洗版。支持多服务器、多用户合并、试运行与通知。",
     "labels": "订阅,洗版,媒体服务器,Emby,Jellyfin",
     "version": "2.0.0",
-    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/playbackawarebestversion.svg",
+    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/playbackbestversion.svg",
     "author": "xlmc",
     "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
     "level": 1,

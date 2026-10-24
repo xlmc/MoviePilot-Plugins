@@ -1,12 +1,12 @@
-# MoviePilot 播放进度洗版守卫插件
+# MoviePilot 播放进度洗版插件
 
-MoviePilot V3 插件：按媒体服务器（Emby / Jellyfin）上的**分集播放进度**决定订阅是否继续洗版。
+MoviePilot V2 插件：按媒体服务器（Emby / Jellyfin）上的**分集播放进度**决定订阅是否继续洗版。
 
 洗版（best_version）的完成判定由宿主的「分集优先级」驱动：某集的 `episode_priority` 等于 100 即视为该集洗版完成、不再搜索更高版本；电影看 `current_priority`。插件读取播放进度，把已经看过的集写成 100，宿主的洗版流程自然跳过它们。
 
 插件**只读**媒体服务器、**只写**订阅表：不删除文件、不下载、不触发整理、不动下载器。
 
-本实现基于 V3 稳定 SDK：`app.sdk.plugin` / `app.sdk.config` / `app.sdk.logging` / `app.sdk.services`，订阅读写走 `app.db.oper.subscribe.SubscribeOper`，不依赖 SessionFactory 与宿主 Model。
+本实现使用 V2 导入路径：`app.plugins` / `app.core.config` / `app.log` / `app.helper.mediaserver` / `app.helper.service`，订阅读写走 `app.db.subscribe_oper.SubscribeOper`。
 
 ## 工作原理
 
@@ -25,13 +25,15 @@ MoviePilot V3 插件：按媒体服务器（Emby / Jellyfin）上的**分集播�
 
 ## 安装
 
-把本仓库配置为 MoviePilot V3 插件市场后，在插件市场中安装「播放进度洗版守卫」。
+把本仓库配置为 MoviePilot V2 插件市场后，在插件市场中安装「播放进度洗版」。
 
 仓库目录结构：
 
-    plugins.v3/playbackawarebestversion/__init__.py
-    package.v3.json
-    icons/playbackawarebestversion.svg
+    plugins.v2/playbackbestversion/__init__.py
+    package.v2.json
+    icons/playbackbestversion.svg
+
+V2 索引里该条目带 `"v3": false`，表示同一插件另有 V3 专用实现（本仓库 plugins.v3/ 下的 v3.0.0），V2 宿主不会看到 V3 版本，V3 宿主也不会回退使用本实现。
 
 ## 配置说明
 

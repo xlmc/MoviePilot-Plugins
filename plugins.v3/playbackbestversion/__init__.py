@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""播放进度洗版守卫（MoviePilot V3）
+"""播放进度洗版（MoviePilot V3）
 
 功能：
     按媒体服务器（Emby / Jellyfin）上的播放进度，决定一个订阅是否还要继续洗版。
@@ -56,18 +56,18 @@ MODE_ANY_PLAY = "any_play"
 MODE_PLAYED = "played"
 
 
-class PlaybackAwareBestVersion(_PluginBase):
-    """播放进度洗版守卫插件。
+class PlaybackBestVersion(_PluginBase):
+    """播放进度洗版插件。
 
     按媒体服务器上的播放进度决定订阅是否继续洗版：已看过的剧集/电影不再重复洗版。
     """
 
     # 插件名称
-    plugin_name = "播放进度洗版守卫"
+    plugin_name = "播放进度洗版"
     # 插件描述
     plugin_desc = "按媒体服务器的播放进度决定订阅是否继续洗版：已看过的剧集/电影不再重复洗版。"
     # 插件图标
-    plugin_icon = "playbackawarebestversion.svg"
+    plugin_icon = "playbackbestversion.svg"
     # 插件版本
     plugin_version = "3.0.0"
     # 插件作者
@@ -75,14 +75,14 @@ class PlaybackAwareBestVersion(_PluginBase):
     # 作者主页
     author_url = "https://github.com/xlmc"
     # 插件配置项 ID 前缀
-    plugin_config_prefix = "playbackawarebestversion_"
+    plugin_config_prefix = "playbackbestversion_"
     # 加载顺序
     plugin_order = 31
     # 可使用的用户级别
     auth_level = 1
 
     # 日志前缀
-    LOG_TAG = "[PlaybackAwareBestVersion] "
+    LOG_TAG = "[PlaybackBestVersion] "
 
     def __init__(self):
         """初始化运行时状态，配置项由 init_plugin 注入。"""
@@ -154,14 +154,14 @@ class PlaybackAwareBestVersion(_PluginBase):
                     self._run_once,
                     "date",
                     run_date=run_date,
-                    name="播放进度洗版守卫-立即运行一次",
+                    name="播放进度洗版-立即运行一次",
                 )
                 logger.info(f"{self.LOG_TAG}已注册「立即运行一次」任务：{run_date}")
             self._scheduler.add_job(
                 self._run_once,
                 "interval",
                 minutes=self._interval,
-                name="播放进度洗版守卫-定时检测",
+                name="播放进度洗版-定时检测",
             )
             self._scheduler.start()
             logger.info(f"{self.LOG_TAG}定时检测已启动，间隔 {self._interval} 分钟")
@@ -209,7 +209,7 @@ class PlaybackAwareBestVersion(_PluginBase):
                                 "props": {
                                     "type": "info" if last.get("success") else "warning",
                                     "variant": "tonal",
-                                    "title": "播放进度洗版守卫",
+                                    "title": "播放进度洗版",
                                     "text": self._page_summary(last),
                                 },
                             }
@@ -327,7 +327,7 @@ class PlaybackAwareBestVersion(_PluginBase):
                                         "props": {
                                             "type": "info",
                                             "variant": "tonal",
-                                            "title": "⏯ 播放进度洗版守卫",
+                                            "title": "⏯ 播放进度洗版",
                                             "text": "按媒体服务器的播放进度决定订阅是否继续洗版：已看过的剧集不再为它洗版，"
                                                     "已看过的电影整部停止洗版。只读媒体服务器、只写订阅表，"
                                                     "不删除、不下载任何内容。",
@@ -864,7 +864,7 @@ class PlaybackAwareBestVersion(_PluginBase):
         try:
             response = client.get_data(url)
         except Exception as err:
-            logger.debug(f"{PlaybackAwareBestVersion.LOG_TAG}请求媒体服务器失败：{err}")
+            logger.debug(f"{PlaybackBestVersion.LOG_TAG}请求媒体服务器失败：{err}")
             return None
         if response is None:
             return None
@@ -1048,7 +1048,7 @@ class PlaybackAwareBestVersion(_PluginBase):
             try:
                 self.post_message(
                     channel=channel,
-                    title="【播放进度洗版守卫】已跳过已看内容的洗版",
+                    title="【播放进度洗版】已跳过已看内容的洗版",
                     text=text,
                 )
             except Exception as err:
