@@ -62,5 +62,19 @@
     "history": {
       "v3.0.0": "首个版本：按 Emby / Jellyfin 的分集播放进度决定是否继续洗版——命中的集写入 episode_priority=100（宿主口径的「该集洗版完成」）并按目标集最小值重算 current_priority，电影命中写 current_priority=100 整部停止洗版；支持进度阈值 / 播过即算 / 标记已看三种判定、多服务器多用户合并、试运行与通知。"
     }
+  },
+  "WatchedCleaner": {
+    "name": "看完即删",
+    "description": "媒体服务器（Emby / Jellyfin）上看完的集自动清理：先把订阅的开始集数前移（洗版订阅同时写分集优先级），让宿主不再把已删的集当成缺失重新下载，再删除媒体库文件、刮削文件、空目录、媒体服务器条目与整理记录。支持连续窗口判定、延迟清理、试运行与通知。",
+    "labels": "订阅,媒体库,清理,Emby,Jellyfin",
+    "version": "3.0.0",
+    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/watchedcleaner.svg",
+    "author": "xlmc",
+    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v3.0.0": "首个版本：按 Emby / Jellyfin 的分集播放进度清理看完的内容——先改订阅再删文件，避免宿主把已删的集判成缺失而重复下载；电视剧从开始集数起连续看完的一段前移 start_episode，洗版订阅额外写 episode_priority=100 并重算 current_priority，电影在洗版订阅下写 current_priority=100；删除链路依次为媒体服务器条目、媒体库文件、下载目录源文件（可选）、同名刮削文件、空目录（最多向上 3 层）、整理记录；支持进度阈值 / 播过即算 / 标记已看三种判定、延迟清理、多服务器多用户合并、试运行与通知。"
+    }
   }
 }
