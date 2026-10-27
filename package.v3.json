@@ -49,46 +49,18 @@
       "v3.0.0": "V3 适配：迁移到 MoviePilot V3 稳定 SDK（app.sdk.config/events/logging/plugin/services/utilities）；通知渠道枚举改用 NotificationChannel。功能与 v2.1.0 保持一致。"
     }
   },
-  "PlaybackBestVersion": {
-    "name": "播放进度洗版",
-    "description": "按媒体服务器（Emby / Jellyfin）的分集播放进度决定订阅是否继续洗版：进度达到阈值（或播过、或标记已看）的集写成洗版完成优先级，宿主不再为它搜索更高版本；电影命中则整部停止洗版。支持多服务器、多用户合并、试运行与通知。",
-    "labels": "订阅,洗版,媒体服务器,Emby,Jellyfin",
+  "WashManager": {
+    "name": "洗版管家",
+    "description": "把「按播放进度停止洗版」「每集最多洗两次」「看完即删」合成一个插件：已看过的剧集/电影不再继续洗版；每集最多下载两次（首发只下本批最低档、只升级一次、升级后停止）；看完后前移订阅开始集数并清理媒体文件、刮削文件、空目录与媒体服务器条目。只读媒体服务器，写库只动分集优先级与开始集数，支持试运行、延迟清理与状态还原。",
+    "labels": "洗版,洗版两次,播放进度,清理,Emby,Jellyfin",
     "version": "3.0.0",
-    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/playbackbestversion.svg",
+    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/washmanager.svg",
     "author": "xlmc",
     "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
     "level": 1,
     "system_version": ">=3.0.0",
     "history": {
-      "v3.0.0": "首个版本：按 Emby / Jellyfin 的分集播放进度决定是否继续洗版——命中的集写入 episode_priority=100（宿主口径的「该集洗版完成」）并按目标集最小值重算 current_priority，电影命中写 current_priority=100 整部停止洗版；支持进度阈值 / 播过即算 / 标记已看三种判定、多服务器多用户合并、试运行与通知。"
-    }
-  },
-  "WatchedCleaner": {
-    "name": "看完即删",
-    "description": "媒体服务器（Emby / Jellyfin）上看完的集自动清理：先把订阅的开始集数前移（洗版订阅同时写分集优先级），让宿主不再把已删的集当成缺失重新下载，再删除媒体库文件、刮削文件、空目录、媒体服务器条目与整理记录。支持连续窗口判定、延迟清理、试运行与通知。",
-    "labels": "订阅,媒体库,清理,Emby,Jellyfin",
-    "version": "3.0.0",
-    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/watchedcleaner.svg",
-    "author": "xlmc",
-    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
-    "level": 1,
-    "system_version": ">=3.0.0",
-    "history": {
-      "v3.0.0": "首个版本：按 Emby / Jellyfin 的分集播放进度清理看完的内容——先改订阅再删文件，避免宿主把已删的集判成缺失而重复下载；电视剧从开始集数起连续看完的一段前移 start_episode，洗版订阅额外写 episode_priority=100 并重算 current_priority，电影在洗版订阅下写 current_priority=100；删除链路依次为媒体服务器条目、媒体库文件、下载目录源文件（可选）、同名刮削文件、空目录（最多向上 3 层）、整理记录；支持进度阈值 / 播过即算 / 标记已看三种判定、延迟清理、多服务器多用户合并、试运行与通知。"
-    }
-  },
-  "WashTwice": {
-    "name": "洗版两次",
-    "description": "让订阅里的每一集最多下载两次：首发只下本批优先级最低的一档，第二次只升级到本批最高的一档，升级完成后写分集优先级 100 让宿主不再为它洗版。阶段按宿主的下载事实对账，下载失败自动重试，支持试运行与状态还原。",
-    "labels": "订阅,洗版,优先级",
-    "version": "3.0.0",
-    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/washtwice.svg",
-    "author": "xlmc",
-    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
-    "level": 1,
-    "system_version": ">=3.0.0",
-    "history": {
-      "v3.0.0": "首个版本：让每集最多下载两次——阶段 0 只放行本批最低档、阶段 1 只放行本批最高档、阶段 2 全部拦掉并写 episode_priority=100（电影写 current_priority=100）；阶段按宿主的 episode_priority / current_priority 对账，下载失败自动重试；只处理订阅来源的批次，非洗版订阅只做首发不收尾；支持试运行与状态还原接口（/status、/reset、/restore）。"
+      "v3.0.0": "首个版本：合并「播放进度洗版」「洗版两次」「看完即删」为一个插件，三项功能各自独立开关。① 进度洗版：按媒体服务器播放进度把已看过的剧集写成 episode_priority=100、电影写成 current_priority=100，停止继续洗版；② 两次上限：在资源选择环节按每集阶段收窄候选——阶段 0 只放行本批最低档、阶段 1 只放行本批最高档、阶段 2 全部拦掉并写 100，阶段按宿主下载事实对账，下载失败自动回退；③ 看完即删：先把订阅开始集数前移到「连续看完的最后一集 + 1」避免被判定缺失重下，再按配置删除媒体文件、刮削文件、空目录、媒体服务器条目与整理记录，可选删除下载目录源文件。一轮只读一次媒体服务器、写库只动 episode_priority / current_priority / start_episode，提供 /run、/status、/reset、/restore 四个接口。"
     }
   }
 }

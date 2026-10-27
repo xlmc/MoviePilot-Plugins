@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="洗版管家">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f3b73"/>
+      <stop offset="1" stop-color="#0b1526"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <g fill="none" stroke="#5aa9ff" stroke-width="12" stroke-linecap="round">
+    <path d="M104.5 41.2 A78.0 78.0 0 0 1 157.0 185.5"/>
+    <path d="M131.5 194.8 A78.0 78.0 0 0 1 79.0 50.5"/>
+  </g>
+  <g fill="#5aa9ff">
+    <path d="M143.1 193.5 L152.0 177.0 L162.0 194.1 Z"/>
+    <path d="M92.9 42.5 L84.0 59.0 L74.0 41.9 Z"/>
+  </g>
+  <path d="M96 86 L96 150 L156 118 Z" fill="#f97316" stroke="#f97316"
+        stroke-width="12" stroke-linejoin="round"/>
+  <g fill="none" stroke="#f97316" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M187 190 L221 190"/>
+    <path d="M200 181 L208 181"/>
+    <path d="M192 196 L195 219 L213 219 L216 196"/>
+    <path d="M201 203 L201 212"/>
+    <path d="M208 203 L208 212"/>
+  </g>
+</svg>
