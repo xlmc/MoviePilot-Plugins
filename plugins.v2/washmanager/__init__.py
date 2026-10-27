@@ -16,6 +16,8 @@
     二、两次上限（twice_enabled，默认开）
         在宿主的资源选择环节收窄候选，让每集最多下载两次：
           - 阶段 0（还没有任何版本）：只放行本批优先级最低的一档；
+            订阅限定了分辨率（例如 4K）时，只在该分辨率的候选里取最低档，
+            避免从 1080p 之类的回退层下单；该分辨率没有候选时退回全批最低档；
           - 阶段 1（已有首发版本）：只放行本批优先级最高的一档；
           - 阶段 2（已升级完成）：全部拦掉，并把该集写成 episode_priority = 100。
         阶段不靠「选择时就记账」，而是每次用宿主自己维护的下载事实对账
@@ -113,7 +115,7 @@ class WashManager(_PluginBase):
     # 插件图标
     plugin_icon = "washmanager.svg"
     # 插件版本
-    plugin_version = "2.0.1"
+    plugin_version = "2.1.0"
     # 插件作者
     plugin_author = "xlmc"
     # 作者主页
@@ -754,7 +756,8 @@ class WashManager(_PluginBase):
                                             "variant": "tonal",
                                             "density": "compact",
                                             "title": "② 两次上限",
-                                            "text": "每集最多下载两次：首发只下本批最低档，只升级一次到本批最高档，"
+                                            "text": "每集最多下载两次：首发只下本批最低档（订阅设了分辨率时只在该分辨率里取最低档），"
+                                                    "只升级一次到本批最高档，"
                                                     "之后不再洗版。只在订阅搜索的资源选择阶段过滤候选，"
                                                     "不动下载器与搜索逻辑。",
                                         },
@@ -1341,7 +1344,10 @@ class WashManager(_PluginBase):
             self._mark_done(subscribe, done, state, priorities, target, season, is_movie, cap, notes)
 
         # 4) 计算本批每集允许的档位
-        allowed = self._allowed_priorities(priorities_by_episode, state, season, is_movie, cap)
+        allowed = self._allowed_priorities(
+            entries, priorities_by_episode, state, season, is_movie, cap,
+            self._resolution_rank(getattr(subscribe, "resolution", None)),
+        )
 
         # 5) 过滤候选
         kept: List[Any] = []
@@ -1383,6 +1389,9 @@ class WashManager(_PluginBase):
                 {
                     "context": context,
                     "pri": priority,
+                    "pix": self._resolution_rank(
+                        getattr(getattr(context, "meta_info", None), "resource_pix", None)
+                    ),
                     "episodes": self._context_episodes(context, target_set, is_movie),
                 }
             )
@@ -1434,11 +1443,13 @@ class WashManager(_PluginBase):
 
     def _allowed_priorities(
             self,
+            entries: List[Dict[str, Any]],
             priorities_by_episode: Dict[int, List[int]],
             state: Dict[str, Dict[str, Any]],
             season: int,
             is_movie: bool,
             cap: bool,
+            resolution_rank: Optional[int],
     ) -> Dict[int, Any]:
         """每集本轮允许的优先级。
 
@@ -1455,10 +1466,38 @@ class WashManager(_PluginBase):
                 allowed[episode] = None if (cap or record.get("capped")) else ALL_PRIORITIES
                 continue
             if stage <= STAGE_NEW and self._twice_lowest_first:
-                allowed[episode] = min(candidates)
+                allowed[episode] = self._lowest_priority(entries, episode, candidates, resolution_rank)
             else:
                 allowed[episode] = max(candidates)
         return allowed
+
+    @staticmethod
+    def _lowest_priority(
+            entries: List[Dict[str, Any]],
+            episode: int,
+            candidates: List[int],
+            resolution_rank: Optional[int],
+    ) -> int:
+        """本集「最低档」的优先级。
+
+        订阅限定了分辨率（例如 4K）时，只在该分辨率的候选里取最低档，
+        避免订阅设了 4K 却从 1080p 回退层下单；该分辨率没有候选时退回全批最低档。
+
+        :param entries: 本批候选
+        :param episode: 集号
+        :param candidates: 本集出现过的优先级
+        :param resolution_rank: 订阅限定的分辨率档位，None 表示不限制
+        :return: 允许的优先级
+        """
+        if resolution_rank is not None:
+            matched = [
+                entry["pri"] for entry in entries
+                if entry.get("episodes") and episode in entry["episodes"]
+                and entry.get("pix") == resolution_rank
+            ]
+            if matched:
+                return min(matched)
+        return min(candidates)
 
     @staticmethod
     def _accept(priority: int, allowed: Any) -> bool:
@@ -2513,6 +2552,30 @@ class WashManager(_PluginBase):
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _resolution_rank(value: Any) -> Optional[int]:
+        """把分辨率标识归一化成可比数值（4K/2160p -> 2160）。
+
+        :param value: 订阅的 resolution 或候选的 resource_pix
+        :return: 归一化后的画面高度，无法识别时返回 None
+        """
+        text = str(value or "").strip().lower().replace(" ", "")
+        if not text:
+            return None
+        if text.endswith("i"):
+            text = text[:-1]
+        aliases = {
+            "8k": 4320, "4k": 2160, "uhd": 2160,
+            "2k": 1440, "fhd": 1080, "hd": 720, "sd": 480,
+        }
+        if text in aliases:
+            return aliases[text]
+        if text.endswith("p") or text.endswith("k"):
+            text = text[:-1]
+        if text.isdigit():
+            return int(text)
+        return None
 
     @staticmethod
     def _as_list(value: Any) -> List[str]:
