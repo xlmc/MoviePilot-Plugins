@@ -61,7 +61,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.db.oper.subscribe import SubscribeOper
 from app.db.oper.transferhistory import TransferHistoryOper
-from app.schemas.types import ChainEventType, MediaType
+from app.schemas.types import ChainEventType, MediaType, NotificationChannel
 from app.sdk.config import settings
 from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
@@ -112,7 +112,7 @@ class WashManager(_PluginBase):
     # 插件图标
     plugin_icon = "washmanager.svg"
     # 插件版本
-    plugin_version = "3.0.0"
+    plugin_version = "3.0.1"
     # 插件作者
     plugin_author = "xlmc"
     # 作者主页
@@ -126,6 +126,23 @@ class WashManager(_PluginBase):
 
     # 日志前缀
     LOG_TAG = "[WashManager] "
+
+    # 通知渠道类型（宿主通知配置的 type）-> 通知渠道枚举
+    NOTIFY_TYPE_MAP = {
+        "telegram": NotificationChannel.Telegram,
+        "wechat": NotificationChannel.Wechat,
+        "feishu": NotificationChannel.Feishu,
+        "wechatclawbot": NotificationChannel.WechatClawBot,
+        "slack": NotificationChannel.Slack,
+        "discord": NotificationChannel.Discord,
+        "dingtalk": NotificationChannel.DingTalk,
+        "synologychat": NotificationChannel.SynologyChat,
+        "vocechat": NotificationChannel.VoceChat,
+        "web": NotificationChannel.Web,
+        "webpush": NotificationChannel.WebPush,
+        "apppush": NotificationChannel.AppPush,
+        "qqbot": NotificationChannel.QQ,
+    }
 
     # 内置刮削文件后缀（元数据 / 图片 / 字幕）
     SCRAP_EXTENSIONS = (
@@ -2440,9 +2457,14 @@ class WashManager(_PluginBase):
 
         text = "\n".join(lines)
         for channel in (self._notify_channel or []):
+            # 配置里存的是宿主通知配置的 type，宿主的消息模型只认通知渠道枚举
+            notify_channel = self.NOTIFY_TYPE_MAP.get(str(channel).lower())
+            if not notify_channel:
+                logger.warning(f"{self.LOG_TAG}未知的通知渠道 {channel}，跳过")
+                continue
             try:
                 self.post_message(
-                    channel=channel,
+                    channel=notify_channel,
                     title="【洗版管家】已按播放进度处理洗版",
                     text=text,
                 )
