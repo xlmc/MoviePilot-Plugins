@@ -18,8 +18,10 @@
           - 阶段 0（还没有任何版本）：只放行本批优先级最低的一档；
             订阅限定了分辨率（例如 4K）时，只在该分辨率的候选里取最低档，
             避免从 1080p 之类的回退层下单；该分辨率没有候选时退回全批最低档；
-          - 阶段 1（已有首发版本）：只放行本批优先级最高的一档；
-          - 阶段 2（已升级完成）：全部拦掉，并把该集写成 episode_priority = 100。
+          - 阶段 1（已有首发版本）：只等最终档（默认宿主规则组首层 pri_order = 100，
+            也就是该剧的最高档版本）；最终档还没出现时全部拦掉、保持等待，
+            不会因为「本批最高档就是已下档」提前收尾；
+          - 阶段 2（已下到最终档）：全部拦掉，并把该集写成 episode_priority = 100。
         阶段不靠「选择时就记账」，而是每次用宿主自己维护的下载事实对账
         （app/chain/subscribe/completion.py:__record_subscribe_download_facts），
         所以下载失败会自然退回上一阶段重试，不会被永久卡死。
@@ -98,7 +100,7 @@ ALL_PRIORITIES = "all"
 # 阶段说明（详情页展示）
 STAGE_TEXT = {
     STAGE_NEW: "待首发（只下最低档）",
-    STAGE_LOW: "待升级（只下最高档）",
+    STAGE_LOW: "待升级（只等最终档）",
     STAGE_DONE: "已完成（不再洗版）",
 }
 # 向上清理空目录的最大层数，避免把媒体库根目录一起删掉
@@ -120,7 +122,7 @@ class WashManager(_PluginBase):
     # 插件图标
     plugin_icon = "washmanager.svg"
     # 插件版本
-    plugin_version = "3.1.1"
+    plugin_version = "3.2.0"
     # 插件作者
     plugin_author = "xlmc"
     # 作者主页
@@ -200,6 +202,8 @@ class WashManager(_PluginBase):
         self._twice_lowest_first = True
         # 升级完成后是否收尾（写 100，彻底停止该集洗版）
         self._twice_cap_after_upgrade = True
+        # 最终档优先级：阶段 1 只等这一档出现再升级（宿主规则组首层恒为 100，即该剧最高档版本）
+        self._twice_final_priority = BEST_VERSION_DONE_PRIORITY
         # 每集阶段：订阅 ID -> 集 key -> 状态
         self._twice_state: Dict[str, Dict[str, Dict[str, Any]]] = {}
         # 订阅标题缓存：订阅 ID -> 标题（详情页展示用）
@@ -261,6 +265,9 @@ class WashManager(_PluginBase):
         self._twice_enabled = bool(config.get("twice_enabled", True))
         self._twice_lowest_first = bool(config.get("twice_lowest_first", True))
         self._twice_cap_after_upgrade = bool(config.get("twice_cap_after_upgrade", True))
+        self._twice_final_priority = min(
+            100, max(1, self._as_int(config.get("twice_final_priority"), BEST_VERSION_DONE_PRIORITY))
+        )
 
         self._clean_enabled = bool(config.get("clean_enabled"))
         self._clean_mark_subscribe = bool(config.get("clean_mark_subscribe", True))
@@ -785,9 +792,9 @@ class WashManager(_PluginBase):
                                             "density": "compact",
                                             "title": "② 两次上限",
                                             "text": "每集最多下载两次：首发只下本批最低档（订阅设了分辨率时只在该分辨率里取最低档），"
-                                                    "只升级一次到本批最高档，"
-                                                    "之后不再洗版。只在订阅搜索的资源选择阶段过滤候选，"
-                                                    "不动下载器与搜索逻辑。",
+                                                    "之后只等最终档（默认规则组首层 = 100，即该剧最高档版本）出现再升级一次；"
+                                                    "最终档还没出现时保持等待、不提前收尾，下到最终档后不再洗版。"
+                                                    "只在订阅搜索的资源选择阶段过滤候选，不动下载器与搜索逻辑。",
                                         },
                                     }
                                 ],
@@ -824,6 +831,21 @@ class WashManager(_PluginBase):
                                     {
                                         "component": "VSwitch",
                                         "props": {"model": "twice_cap_after_upgrade", "label": "升级后停止洗版"},
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "twice_final_priority",
+                                            "label": "最终档优先级",
+                                            "placeholder": "100",
+                                            "type": "number",
+                                        },
                                     }
                                 ],
                             },
@@ -1278,7 +1300,7 @@ class WashManager(_PluginBase):
 
     @eventmanager.register(ChainEventType.ResourceSelection)
     def on_resource_selection(self, event: Event):
-        """资源选择事件：按「最低档 / 最高档 / 已完成」三态过滤候选。"""
+        """资源选择事件：按「首发最低档 / 等最终档 / 已完成」三态过滤候选。"""
         try:
             self._handle_event(event)
         except Exception as err:
@@ -1354,30 +1376,19 @@ class WashManager(_PluginBase):
         priorities_by_episode = self._priorities_by_episode(entries)
 
         notes: List[str] = []
-        # 1) 用宿主的下载事实推进阶段
+        # 1) 用宿主的下载事实推进阶段：只有「已经下到最终档」才进入阶段 2
         done = self._reconcile(state, priorities, target, season, is_movie)
-        # 2) 已经没有更高档可升的集，直接收尾
-        for episode in target:
-            key = self._key(season, episode, is_movie)
-            record = state.get(key) or {}
-            if self._as_int(record.get("stage"), STAGE_NEW) != STAGE_LOW:
-                continue
-            first = self._as_int(record.get("first"), UNSET_PRIORITY)
-            candidates = priorities_by_episode.get(episode) or []
-            if candidates and max(candidates) <= first and episode not in done:
-                record["stage"] = STAGE_DONE
-                done.append(episode)
-        # 3) 收尾：写 100，让宿主不再为这些集搜索
+        # 2) 收尾：写 100，让宿主不再为这些集搜索
         if done:
             self._mark_done(subscribe, done, state, priorities, target, season, is_movie, cap, notes)
 
-        # 4) 计算本批每集允许的档位
+        # 3) 计算本批每集允许的档位
         allowed = self._allowed_priorities(
             entries, priorities_by_episode, state, season, is_movie, cap,
             self._resolution_rank(getattr(subscribe, "resolution", None)),
         )
 
-        # 5) 过滤候选
+        # 4) 过滤候选
         kept: List[Any] = []
         for entry in entries:
             episodes = entry.get("episodes")
@@ -1392,17 +1403,13 @@ class WashManager(_PluginBase):
             if all(self._accept(entry["pri"], allowed.get(episode)) for episode in episodes):
                 kept.append(entry["context"])
 
-        # 6) 记录阶段 1 的升级目标：本批放行的最高档
+        # 5) 记录阶段 1 的升级目标：最终档（下到这一档就算升级完成）
         for episode in target:
             key = self._key(season, episode, is_movie)
             record = state.get(key) or {}
             if self._as_int(record.get("stage"), STAGE_NEW) != STAGE_LOW:
                 continue
-            tier = allowed.get(episode)
-            if not isinstance(tier, int):
-                continue
-            if tier > self._as_int(record.get("first"), UNSET_PRIORITY):
-                record["target"] = tier
+            record["target"] = self._twice_final_priority
 
         return kept, notes
 
@@ -1493,10 +1500,20 @@ class WashManager(_PluginBase):
                 # 「capped」表示宿主侧已经是 100（进度洗版或看完即删写进去的），同样拦掉。
                 allowed[episode] = None if (cap or record.get("capped")) else ALL_PRIORITIES
                 continue
-            if stage <= STAGE_NEW and self._twice_lowest_first:
-                allowed[episode] = self._lowest_priority(entries, episode, candidates, resolution_rank)
+            if stage <= STAGE_NEW:
+                if self._twice_lowest_first:
+                    # 阶段 0：首发只下本批最低档，先拿到更新最快的那一版
+                    allowed[episode] = self._lowest_priority(entries, episode, candidates, resolution_rank)
+                else:
+                    # 阶段 0（不限最低档）：首发直接取本批最高档
+                    allowed[episode] = max(candidates)
             else:
-                allowed[episode] = max(candidates)
+                # 阶段 1：只等最终档（默认宿主规则组首层 pri_order = 100，即该剧最高档版本）。
+                # 最终档还没出现时全部拦掉、保持等待，不因为「本批最高档就是已下档」提前收尾，
+                # 否则最高画质版本晚几周发布时就永远拿不到了。
+                allowed[episode] = (
+                    self._twice_final_priority if self._twice_final_priority in candidates else None
+                )
         return allowed
 
     @staticmethod
@@ -2560,6 +2577,7 @@ class WashManager(_PluginBase):
             "twice_enabled": self._twice_enabled,
             "twice_lowest_first": self._twice_lowest_first,
             "twice_cap_after_upgrade": self._twice_cap_after_upgrade,
+            "twice_final_priority": self._twice_final_priority,
             "clean_enabled": self._clean_enabled,
             "clean_mark_subscribe": self._clean_mark_subscribe,
             "clean_delete_media_files": self._clean_delete_media_files,

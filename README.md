@@ -9,7 +9,7 @@
 | <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v2.0.0 | v3.1.0 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速 |
 | <img src="icons/clean.png" width="26" align="top"/> **[源文件联动清理](#源文件联动清理-scrapefileclean)** | v1.0.7（官方仓库） | v2.1.0 | 手动删除源文件后，自动联动清理硬链接、刮削文件、转移记录与媒体服务器条目 |
 | <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emosupload)** | v2.1.0 | v3.0.0 | MoviePilot 下载完成后自动上传源文件到 EMOS 资源站 |
-| <img src="icons/washmanager.svg" width="26" align="top"/> **[洗版管家](#洗版管家-washmanager)** | v2.1.1 | v3.1.1 | 三合一：播放进度洗版 + 洗版两次 + 看完即删，三个功能各带独立开关 |
+| <img src="icons/washmanager.svg" width="26" align="top"/> **[洗版管家](#洗版管家-washmanager)** | v2.2.0 | v3.2.0 | 三合一：播放进度洗版 + 洗版两次 + 看完即删，三个功能各带独立开关 |
 | <img src="icons/playbackbestversion.svg" width="26" align="top"/> **[播放进度洗版](#播放进度洗版-playbackbestversion)** | v2.1.0 | v3.1.0 | 已并入「洗版管家」；按分集播放进度决定是否继续洗版 |
 | <img src="icons/watchedcleaner.svg" width="26" align="top"/> **[看完即删](#看完即删-watchedcleaner)** | v2.1.0 | v3.1.0 | 已并入「洗版管家」；看完的集自动清理，且不会被重新下载 |
 | <img src="icons/washtwice.svg" width="26" align="top"/> **[洗版两次](#洗版两次-washtwice)** | v2.1.0 | v3.1.0 | 已并入「洗版管家」；每集只下载两次 |
