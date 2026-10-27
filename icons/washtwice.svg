@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="洗版两次">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f3b73"/>
+      <stop offset="1" stop-color="#0b1526"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <g fill="none" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M64 148 L100 112 L136 148" stroke="#5aa9ff"/>
+    <path d="M64 196 L100 160 L136 196" stroke="#f97316"/>
+  </g>
+  <circle cx="192" cy="182" r="32" fill="#0b1526" stroke="#5aa9ff" stroke-width="8"/>
+  <text x="192" y="197" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif"
+        font-size="40" font-weight="700" fill="#5aa9ff">2</text>
+</svg>

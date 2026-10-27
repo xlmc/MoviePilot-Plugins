@@ -76,5 +76,19 @@
     "history": {
       "v3.0.0": "首个版本：按 Emby / Jellyfin 的分集播放进度清理看完的内容——先改订阅再删文件，避免宿主把已删的集判成缺失而重复下载；电视剧从开始集数起连续看完的一段前移 start_episode，洗版订阅额外写 episode_priority=100 并重算 current_priority，电影在洗版订阅下写 current_priority=100；删除链路依次为媒体服务器条目、媒体库文件、下载目录源文件（可选）、同名刮削文件、空目录（最多向上 3 层）、整理记录；支持进度阈值 / 播过即算 / 标记已看三种判定、延迟清理、多服务器多用户合并、试运行与通知。"
     }
+  },
+  "WashTwice": {
+    "name": "洗版两次",
+    "description": "让订阅里的每一集最多下载两次：首发只下本批优先级最低的一档，第二次只升级到本批最高的一档，升级完成后写分集优先级 100 让宿主不再为它洗版。阶段按宿主的下载事实对账，下载失败自动重试，支持试运行与状态还原。",
+    "labels": "订阅,洗版,优先级",
+    "version": "3.0.0",
+    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/washtwice.svg",
+    "author": "xlmc",
+    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v3.0.0": "首个版本：让每集最多下载两次——阶段 0 只放行本批最低档、阶段 1 只放行本批最高档、阶段 2 全部拦掉并写 episode_priority=100（电影写 current_priority=100）；阶段按宿主的 episode_priority / current_priority 对账，下载失败自动重试；只处理订阅来源的批次，非洗版订阅只做首发不收尾；支持试运行与状态还原接口（/status、/reset、/restore）。"
+    }
   }
 }

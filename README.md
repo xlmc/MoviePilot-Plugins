@@ -11,6 +11,7 @@
 | <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emosupload)** | v2.1.0 | v3.0.0 | MoviePilot 下载完成后自动上传源文件到 EMOS 资源站 |
 | <img src="icons/playbackbestversion.svg" width="26" align="top"/> **[播放进度洗版](#播放进度洗版-playbackbestversion)** | v2.0.0 | v3.0.0 | 按媒体服务器上的分集播放进度决定是否继续洗版，看过的集不再搜索更高版本 |
 | <img src="icons/watchedcleaner.svg" width="26" align="top"/> **[看完即删](#看完即删-watchedcleaner)** | v2.0.0 | v3.0.0 | 看完的集自动清理：先改订阅再删文件，媒体库文件/刮削/空目录/媒体服务器条目一并清掉且不会被重新下载 |
+| <img src="icons/washtwice.svg" width="26" align="top"/> **[洗版两次](#洗版两次-washtwice)** | v2.0.0 | v3.0.0 | 每集只下载两次：首发只下本批最低档，只升级一次到最高档，之后不再洗版 |
 
 ## 安装
 
@@ -134,6 +135,22 @@ MoviePilot 入库完成后自动将源文件上传到 EMOS（Emby 资源站上�
 > 空间与保种互斥：媒体库文件通常是下载目录源文件的硬链接，只删媒体库侧不释放空间；要释放空间必须开启「删除下载目录源文件」。
 
 详细功能与配置说明见 [plugins.v2/watchedcleaner/README.md](plugins.v2/watchedcleaner/README.md)（V2）与 [plugins.v3/watchedcleaner/README.md](plugins.v3/watchedcleaner/README.md)（V3）。
+
+## 洗版两次 WashTwice
+
+宿主的洗版没有次数上限：某集的 `episode_priority` 没到 100，每轮搜索到更高优先级的候选就会重新下载替换。本插件在**资源选择**环节把每集的候选收窄成三次机会——首发一次、升级一次、之后不再洗版。
+
+主要特性：
+
+- **三阶段过滤**：阶段 0 只放行本批优先级最低的候选，阶段 1 只放行最高的一档，阶段 2 全部拦掉
+- **收尾写 100**：升级完成后写 `episode_priority = 100`（电影写 `current_priority = 100`）并重算整部优先级，宿主此后不再为该集搜索
+- **阶段靠对账**：用宿主自己维护的下载事实（`episode_priority` / `current_priority`）判断阶段，不在选择时记账——下载失败阶段不动，下一轮自动重试，不会被永久卡死
+- **只处理订阅来源**：手动搜索、RSS 等批次一律放行；整包资源（拿不到集数信息）原样放行
+- **只对洗版订阅收尾**：没开洗版的订阅只做「首发最低档」，避免永久拦截导致删掉的文件再也下不回来
+- **写库范围最小**：只写 `episode_priority` 与 `current_priority`，其它集原有优先级保留；提供 `/status`、`/reset`、`/restore` 接口，写过的 100 可一键还原
+- 试运行模式（默认开启）：只记日志不改候选、不写库
+
+详细功能与配置说明见 [plugins.v2/washtwice/README.md](plugins.v2/washtwice/README.md)（V2）与 [plugins.v3/washtwice/README.md](plugins.v3/washtwice/README.md)（V3）。
 
 ## 许可
 
