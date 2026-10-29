@@ -11,7 +11,7 @@
 | <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emosupload)** | v2.1.0 | v3.0.0 | MoviePilot 下载完成后自动上传源文件到 EMOS 资源站 |
 | <img src="icons/playbackbestversion.svg" width="26" align="top"/> **[播放进度洗版](#播放进度洗版-playbackbestversion)** | v2.2.0 | v3.2.0 | 按分集播放进度决定是否继续洗版 |
 | <img src="icons/watchedcleaner.svg" width="26" align="top"/> **[看完即删](#看完即删-watchedcleaner)** | v2.2.0 | v3.2.0 | 看完的集自动清理，且不会被重新下载 |
-| <img src="icons/washtwice.svg" width="26" align="top"/> **[洗版两次](#洗版两次-washtwice)** | v2.2.0 | v3.2.0 | 首发最低档，第二次只升到最终档 |
+| <img src="icons/washtwice.svg" width="26" align="top"/> **[洗版两次](#洗版两次-washtwice)** | v2.3.0 | v3.3.0 | 首发最低档，第二次升到订阅想要的最高档 |
 
 ## 安装
 

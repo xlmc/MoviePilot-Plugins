@@ -4,9 +4,16 @@
 功能：
     让一个订阅的每一集最多下载两次：
     第一次只下载本批候选里优先级最低的那一档（订阅限定了分辨率时，
-    只在该分辨率的候选里取最低档），第二次只升级到「最终档」
-    （默认优先级 100，即规则组里的最高档），升级完成后把该集标记为「洗版完成」，
-    之后不再为它下载任何版本。
+    只在该分辨率的候选里取最低档），第二次只升级到「最终档」，
+    升级完成后把该集标记为「洗版完成」，之后不再为它下载任何版本。
+
+    「最终档」怎么定：
+        - 订阅用「特效」或「包含关键词」限定了想要的资源时：宿主对这两项都是
+          标题正则硬过滤（app/application/torrent/download.py:_text_filter_failure），
+          本批候选本身就已经是用户想要的那一类，所以最终档取本批最高的一档，
+          下到它就收尾，不再死等规则组首层；
+        - 订阅没做这类限定、只是按规则组洗版时：最终档 = 「最终档优先级」
+          （默认 100，即规则组首层），该档没出现就一直等。
 
     - 「优先级」就是宿主的 torrent.pri_order（由过滤模块按做种数/分辨率/字幕等规则算出，
       app/modules/filter/__init__.py），数值越大代表档位越高；
@@ -23,7 +30,8 @@
        手动搜索、RSS、其它来源的下载一律放行；
     3. 用 origin 里的订阅 ID 读出订阅，按「每集阶段」过滤候选：
          阶段 0：该集还没有任何版本 —— 只保留本批优先级最低的候选；
-         阶段 1：该集已有首发版本 —— 只等最终档，最终档没出现就全部拦掉（保持等待）；
+         阶段 1：该集已有首发版本 —— 只放行最终档（订阅设了特效/包含关键词时
+                 取本批最高档，否则等固定最终档），本批没有就全部拦掉；
          阶段 2：该集已升级完成 —— 全部拦掉，并写 episode_priority=100；
     4. 阶段不靠「选择时就记账」，而是每次用宿主自己维护的下载事实对账：
        电视剧看 subscribe.episode_priority[集号]、电影看 subscribe.current_priority
@@ -67,7 +75,7 @@ ALL_PRIORITIES = "all"
 # 阶段说明（详情页展示）
 STAGE_TEXT = {
     STAGE_NEW: "待首发（只下最低档）",
-    STAGE_LOW: "待升级（只等最终档）",
+    STAGE_LOW: "待升级（升级到最终档）",
     STAGE_DONE: "已完成（不再洗版）",
 }
 
@@ -85,7 +93,7 @@ class WashTwice(_PluginBase):
     # 插件图标
     plugin_icon = "washtwice.svg"
     # 插件版本
-    plugin_version = "2.2.0"
+    plugin_version = "2.3.0"
     # 插件作者
     plugin_author = "xlmc"
     # 作者主页
@@ -115,7 +123,8 @@ class WashTwice(_PluginBase):
         self._lowest_first = True
         # 升级完成后是否收尾（写 100，彻底停止该集洗版）
         self._cap_after_upgrade = True
-        # 升级目标档：下到这一档就算升级完成（默认 100 = 规则组最高档）
+        # 固定最终档：订阅没限定特效/包含关键词时，下到这一档才算升级完成
+        # （默认 100 = 规则组最高档）
         self._final_priority = BEST_VERSION_DONE_PRIORITY
         # 每集阶段：订阅 ID -> 集 key -> 状态
         self._state: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -403,8 +412,11 @@ class WashTwice(_PluginBase):
                                             "density": "compact",
                                             "text": "「首发只下最低档」关闭时，第一次也放行全部候选；"
                                                     "订阅设了分辨率时只在该分辨率里取最低档。"
-                                                    "升级阶段只等「最终档优先级」（默认 100，即规则组最高档），"
-                                                    "该档没出现就一直等；「升级后停止洗版」只对开启了洗版的订阅生效，"
+                                                    "升级阶段：订阅设了「特效」或「包含关键词」时，"
+                                                    "候选本来就只有符合这两项的资源，取本批最高的一档下完就收尾；"
+                                                    "订阅没做这类限定时才等「最终档优先级」"
+                                                    "（默认 100，即规则组最高档），该档没出现就一直等。"
+                                                    "「升级后停止洗版」只对开启了洗版的订阅生效，"
                                                     "会写入分集优先级 100 让该集不再参与洗版。",
                                         },
                                     }
@@ -507,6 +519,7 @@ class WashTwice(_PluginBase):
         allowed = self._allowed_priorities(
             entries, priorities_by_episode, state, season, is_movie, cap,
             self._resolution_rank(getattr(subscribe, "resolution", None)),
+            self._subscribe_pinned(subscribe),
         )
 
         # 4) 过滤候选
@@ -524,13 +537,18 @@ class WashTwice(_PluginBase):
             if all(self._accept(entry["pri"], allowed.get(episode)) for episode in episodes):
                 kept.append(entry["context"])
 
-        # 5) 记录阶段 1 的升级目标：最终档（下到这一档就算升级完成）
+        # 5) 记录阶段 1 的升级目标：本轮放行的那一档（下到这一档就算升级完成）
         for episode in target:
             key = self._key(season, episode, is_movie)
             record = state.get(key) or {}
             if self._as_int(record.get("stage"), STAGE_NEW) != STAGE_LOW:
                 continue
-            record["target"] = self._final_priority
+            goal = allowed.get(episode)
+            if isinstance(goal, int) and not isinstance(goal, bool):
+                record["target"] = goal
+            elif self._as_int(record.get("target"), 0) <= 0:
+                # 本批没有可放行的档位：目标仍记固定最终档，保证状态里有目标可对账
+                record["target"] = self._final_priority
 
         return kept, notes
 
@@ -606,6 +624,7 @@ class WashTwice(_PluginBase):
             is_movie: bool,
             cap: bool,
             resolution_rank: Optional[int],
+            pinned: bool,
     ) -> Dict[int, Any]:
         """每集本轮允许的优先级。
 
@@ -629,13 +648,44 @@ class WashTwice(_PluginBase):
                     # 阶段 0（不限最低档）：首发直接取本批最高档
                     allowed[episode] = max(candidates)
             else:
-                # 阶段 1：只等最终档（默认宿主规则组首层 pri_order = 100，即该剧最高档版本）。
-                # 最终档还没出现时全部拦掉、保持等待，不因为「本批最高档就是已下档」提前收尾，
-                # 否则最高画质版本晚几周发布时就永远拿不到了。
-                allowed[episode] = (
-                    self._final_priority if self._final_priority in candidates else None
-                )
+                # 阶段 1：升级到最终档。订阅用「特效」/「包含关键词」限定了资源时，
+                # 本批候选已经是用户想要的那一类，取其中最高的一档下完就收尾；
+                # 没做限定时才等固定最终档（默认宿主规则组首层 pri_order = 100），
+                # 该档没出现就全部拦掉、保持等待，否则最高画质版本晚几周发布就拿不到了。
+                allowed[episode] = self._final_tier(candidates, pinned)
         return allowed
+
+    def _final_tier(self, candidates: List[int], pinned: bool) -> Optional[int]:
+        """阶段 1 的目标档位。
+
+        订阅已经限定了想要的资源（特效 / 包含关键词）时，最终档就是本批最高的一档；
+        否则等固定的「最终档优先级」，没出现则返回 None（全部拦掉）。
+
+        :param candidates: 本集出现过的优先级
+        :param pinned: 订阅是否已用特效/包含关键词限定资源
+        :return: 允许的优先级，None 表示本集全部拦掉
+        """
+        if not candidates:
+            return None
+        if pinned:
+            return max(candidates)
+        return self._final_priority if self._final_priority in candidates else None
+
+    @staticmethod
+    def _subscribe_pinned(subscribe) -> bool:
+        """订阅是否已经用「特效」或「包含关键词」限定了想要的资源。
+
+        宿主把这两项都当标题正则硬过滤（app/application/torrent/download.py:
+        _text_filter_failure），设了它们之后本批候选只剩用户想要的那一类，
+        「最高档」由订阅自己定义，不必再等规则组首层。
+
+        :param subscribe: 订阅记录
+        :return: 是否做了这类限定
+        """
+        for field in ("effect", "include"):
+            if str(getattr(subscribe, field, None) or "").strip():
+                return True
+        return False
 
     @staticmethod
     def _accept(priority: int, allowed: Any) -> bool:
