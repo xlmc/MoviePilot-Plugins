@@ -38,7 +38,7 @@ import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.db.oper.subscribe import SubscribeOper
-from app.schemas.types import MediaType
+from app.schemas.types import MediaType, NotificationChannel
 from app.sdk.config import settings
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
@@ -55,6 +55,12 @@ MODE_PERCENTAGE = "percentage"
 MODE_ANY_PLAY = "any_play"
 MODE_PLAYED = "played"
 
+# 读取播放进度失败的原因（写进日志与详情页，避免静默跳过）
+PLAYBACK_STATUS_TEXT = {
+    "no_user": "没有可统计的用户",
+    "not_found": "找不到对应条目",
+}
+
 
 class PlaybackBestVersion(_PluginBase):
     """播放进度洗版插件。
@@ -69,7 +75,7 @@ class PlaybackBestVersion(_PluginBase):
     # 插件图标
     plugin_icon = "playbackbestversion.svg"
     # 插件版本
-    plugin_version = "3.1.0"
+    plugin_version = "3.2.0"
     # 插件作者
     plugin_author = "xlmc"
     # 作者主页
@@ -83,6 +89,23 @@ class PlaybackBestVersion(_PluginBase):
 
     # 日志前缀
     LOG_TAG = "[PlaybackBestVersion] "
+
+    # 通知渠道类型（宿主通知配置的 type）-> 通知渠道枚举
+    NOTIFY_TYPE_MAP = {
+        "telegram": NotificationChannel.Telegram,
+        "wechat": NotificationChannel.Wechat,
+        "feishu": NotificationChannel.Feishu,
+        "wechatclawbot": NotificationChannel.WechatClawBot,
+        "slack": NotificationChannel.Slack,
+        "discord": NotificationChannel.Discord,
+        "dingtalk": NotificationChannel.DingTalk,
+        "synologychat": NotificationChannel.SynologyChat,
+        "vocechat": NotificationChannel.VoceChat,
+        "web": NotificationChannel.Web,
+        "webpush": NotificationChannel.WebPush,
+        "apppush": NotificationChannel.AppPush,
+        "qqbot": NotificationChannel.QQ,
+    }
 
     def __init__(self):
         """初始化运行时状态，配置项由 init_plugin 注入。"""
@@ -118,28 +141,6 @@ class PlaybackBestVersion(_PluginBase):
         # 最近一次执行结果（详情页与通知用）
         self._last_run: Dict[str, Any] = {}
 
-    # ---- 合并迁移提示（三插件并入「洗版管家」后新增）----
-
-    MIGRATION_TEXT = (
-        "本插件已并入「洗版管家」（WashManager）：播放进度洗版、洗版两次、看完即删三项功能合到一个插件里。\n"
-        "请到插件市场安装「洗版管家」，把本插件的配置在新插件里重新设置一遍，确认无误后再卸载本插件。\n"
-        "本插件保持可用，但不再更新，后续修复与新功能只在「洗版管家」里发布。"
-    )
-
-    def _notify_migration(self):
-        """升级后首次加载时发一次迁移提示，之后不再打扰。"""
-        try:
-            if self.get_data("migration_notice"):
-                return
-            self.post_message(
-                title="【迁移提示】本插件已并入「洗版管家」",
-                text=self.MIGRATION_TEXT,
-            )
-            self.save_data("migration_notice", True)
-            logger.info(f"{self.LOG_TAG}已发送合并迁移提示")
-        except Exception as err:
-            logger.error(f"{self.LOG_TAG}发送合并迁移提示失败：{err}")
-
     def init_plugin(self, config: dict = None):
         """初始化插件：读取配置、按需立即运行一次，并启动定时调度。
 
@@ -148,8 +149,6 @@ class PlaybackBestVersion(_PluginBase):
         # 先停掉旧调度器，避免保存配置后出现两份定时任务
         self.stop_service()
 
-        # 合并迁移提示：升级后首次加载发一次
-        self._notify_migration()
 
         config = config or {}
         self._enabled = bool(config.get("enabled"))
@@ -654,7 +653,13 @@ class PlaybackBestVersion(_PluginBase):
                 logger.warning(f"{self.LOG_TAG}{record['title']} 读取 {server['name']} 播放进度失败：{err}")
                 record["status"] = f"{server['name']} 读取失败：{err}"
                 continue
-            if not playback or playback.get("status") != "ok":
+            status = (playback or {}).get("status")
+            if status != "ok":
+                # 以前这里是静默 continue，出了问题完全查不到原因；
+                # 现在把原因写进日志和详情页（no_user / not_found / 读取异常）
+                reason = PLAYBACK_STATUS_TEXT.get(status, f"读取播放进度失败（{status or '无返回'}）")
+                logger.info(f"{self.LOG_TAG}{record['title']} 在 {server['name']} 上{reason}，跳过")
+                record["status"] = f"{server['name']} {reason}"
                 continue
 
             record["server"] = server["name"]
@@ -1070,9 +1075,14 @@ class PlaybackBestVersion(_PluginBase):
 
         text = "\n".join(lines)
         for channel in (self._notify_channel or []):
+            # 配置里存的是宿主通知配置的 type，宿主的消息模型只认通知渠道枚举
+            notify_channel = self.NOTIFY_TYPE_MAP.get(str(channel).lower())
+            if not notify_channel:
+                logger.warning(f"{self.LOG_TAG}未知的通知渠道 {channel}，跳过")
+                continue
             try:
                 self.post_message(
-                    channel=channel,
+                    channel=notify_channel,
                     title="【播放进度洗版】已跳过已看内容的洗版",
                     text=text,
                 )

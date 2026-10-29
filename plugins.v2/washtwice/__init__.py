@@ -3,8 +3,10 @@
 
 功能：
     让一个订阅的每一集最多下载两次：
-    第一次只下载本批候选里优先级最低的那一档，第二次只升级到本批候选里最高的一档，
-    升级完成后把该集标记为「洗版完成」，之后不再为它下载任何版本。
+    第一次只下载本批候选里优先级最低的那一档（订阅限定了分辨率时，
+    只在该分辨率的候选里取最低档），第二次只升级到「最终档」
+    （默认优先级 100，即规则组里的最高档），升级完成后把该集标记为「洗版完成」，
+    之后不再为它下载任何版本。
 
     - 「优先级」就是宿主的 torrent.pri_order（由过滤模块按做种数/分辨率/字幕等规则算出，
       app/modules/filter/__init__.py），数值越大代表档位越高；
@@ -21,7 +23,7 @@
        手动搜索、RSS、其它来源的下载一律放行；
     3. 用 origin 里的订阅 ID 读出订阅，按「每集阶段」过滤候选：
          阶段 0：该集还没有任何版本 —— 只保留本批优先级最低的候选；
-         阶段 1：该集已有首发版本 —— 只保留本批优先级最高的候选；
+         阶段 1：该集已有首发版本 —— 只等最终档，最终档没出现就全部拦掉（保持等待）；
          阶段 2：该集已升级完成 —— 全部拦掉，并写 episode_priority=100；
     4. 阶段不靠「选择时就记账」，而是每次用宿主自己维护的下载事实对账：
        电视剧看 subscribe.episode_priority[集号]、电影看 subscribe.current_priority
@@ -65,7 +67,7 @@ ALL_PRIORITIES = "all"
 # 阶段说明（详情页展示）
 STAGE_TEXT = {
     STAGE_NEW: "待首发（只下最低档）",
-    STAGE_LOW: "待升级（只下最高档）",
+    STAGE_LOW: "待升级（只等最终档）",
     STAGE_DONE: "已完成（不再洗版）",
 }
 
@@ -79,11 +81,11 @@ class WashTwice(_PluginBase):
     # 插件名称
     plugin_name = "洗版两次"
     # 插件描述
-    plugin_desc = "每集只下载两次：首发只下本批最低档，只升级一次到最高档，之后不再洗版。"
+    plugin_desc = "每集只下载两次：首发只下本批最低档，只升级一次到最终档，之后不再洗版。"
     # 插件图标
     plugin_icon = "washtwice.svg"
     # 插件版本
-    plugin_version = "2.1.0"
+    plugin_version = "2.2.0"
     # 插件作者
     plugin_author = "xlmc"
     # 作者主页
@@ -113,6 +115,8 @@ class WashTwice(_PluginBase):
         self._lowest_first = True
         # 升级完成后是否收尾（写 100，彻底停止该集洗版）
         self._cap_after_upgrade = True
+        # 升级目标档：下到这一档就算升级完成（默认 100 = 规则组最高档）
+        self._final_priority = BEST_VERSION_DONE_PRIORITY
         # 每集阶段：订阅 ID -> 集 key -> 状态
         self._state: Dict[str, Dict[str, Dict[str, Any]]] = {}
         # 订阅标题缓存：订阅 ID -> 标题（详情页展示用）
@@ -120,35 +124,11 @@ class WashTwice(_PluginBase):
         # 最近一次处理摘要
         self._last_run: Dict[str, Any] = {}
 
-    # ---- 合并迁移提示（三插件并入「洗版管家」后新增）----
-
-    MIGRATION_TEXT = (
-        "本插件已并入「洗版管家」（WashManager）：播放进度洗版、洗版两次、看完即删三项功能合到一个插件里。\n"
-        "请到插件市场安装「洗版管家」，把本插件的配置在新插件里重新设置一遍，确认无误后再卸载本插件。\n"
-        "本插件保持可用，但不再更新，后续修复与新功能只在「洗版管家」里发布。"
-    )
-
-    def _notify_migration(self):
-        """升级后首次加载时发一次迁移提示，之后不再打扰。"""
-        try:
-            if self.get_data("migration_notice"):
-                return
-            self.post_message(
-                title="【迁移提示】本插件已并入「洗版管家」",
-                text=self.MIGRATION_TEXT,
-            )
-            self.save_data("migration_notice", True)
-            logger.info(f"{self.LOG_TAG}已发送合并迁移提示")
-        except Exception as err:
-            logger.error(f"{self.LOG_TAG}发送合并迁移提示失败：{err}")
-
     def init_plugin(self, config: dict = None):
         """初始化插件：读取配置与上次状态。
 
         :param config: 插件配置字典，来自宿主的插件配置存储
         """
-        # 合并迁移提示：升级后首次加载发一次
-        self._notify_migration()
 
         config = config or {}
         self._enabled = bool(config.get("enabled"))
@@ -157,6 +137,9 @@ class WashTwice(_PluginBase):
         self._handle_movie = bool(config.get("handle_movie", True))
         self._lowest_first = bool(config.get("lowest_first", True))
         self._cap_after_upgrade = bool(config.get("cap_after_upgrade", True))
+        self._final_priority = min(
+            100, max(1, self._as_int(config.get("final_priority"), BEST_VERSION_DONE_PRIORITY))
+        )
 
         # 恢复上次的每集阶段，重启后不用重新数一遍
         saved = self.get_data("state")
@@ -395,6 +378,21 @@ class WashTwice(_PluginBase):
                             },
                             {
                                 "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "final_priority",
+                                            "label": "最终档优先级",
+                                            "placeholder": 100,
+                                            "type": "number",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
                                 "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
@@ -404,7 +402,9 @@ class WashTwice(_PluginBase):
                                             "variant": "tonal",
                                             "density": "compact",
                                             "text": "「首发只下最低档」关闭时，第一次也放行全部候选；"
-                                                    "「升级后停止洗版」只对开启了洗版的订阅生效，"
+                                                    "订阅设了分辨率时只在该分辨率里取最低档。"
+                                                    "升级阶段只等「最终档优先级」（默认 100，即规则组最高档），"
+                                                    "该档没出现就一直等；「升级后停止洗版」只对开启了洗版的订阅生效，"
                                                     "会写入分集优先级 100 让该集不再参与洗版。",
                                         },
                                     }
@@ -497,27 +497,19 @@ class WashTwice(_PluginBase):
         priorities_by_episode = self._priorities_by_episode(entries)
 
         notes: List[str] = []
-        # 1) 用宿主的下载事实推进阶段
+        # 1) 用宿主的下载事实推进阶段：只有「已经下到最终档」才进入阶段 2
         done = self._reconcile(state, priorities, target, season, is_movie)
-        # 2) 已经没有更高档可升的集，直接收尾
-        for episode in target:
-            key = self._key(season, episode, is_movie)
-            record = state.get(key) or {}
-            if self._as_int(record.get("stage"), STAGE_NEW) != STAGE_LOW:
-                continue
-            first = self._as_int(record.get("first"), UNSET_PRIORITY)
-            candidates = priorities_by_episode.get(episode) or []
-            if candidates and max(candidates) <= first and episode not in done:
-                record["stage"] = STAGE_DONE
-                done.append(episode)
-        # 3) 收尾：写 100，让宿主不再为这些集搜索
+        # 2) 收尾：写 100，让宿主不再为这些集搜索
         if done:
             self._mark_done(subscribe, done, state, priorities, target, season, is_movie, cap, notes)
 
-        # 4) 计算本批每集允许的档位
-        allowed = self._allowed_priorities(priorities_by_episode, state, season, is_movie, cap)
+        # 3) 计算本批每集允许的档位
+        allowed = self._allowed_priorities(
+            entries, priorities_by_episode, state, season, is_movie, cap,
+            self._resolution_rank(getattr(subscribe, "resolution", None)),
+        )
 
-        # 5) 过滤候选
+        # 4) 过滤候选
         kept: List[Any] = []
         for entry in entries:
             episodes = entry.get("episodes")
@@ -532,17 +524,13 @@ class WashTwice(_PluginBase):
             if all(self._accept(entry["pri"], allowed.get(episode)) for episode in episodes):
                 kept.append(entry["context"])
 
-        # 6) 记录阶段 1 的升级目标：本批放行的最高档
+        # 5) 记录阶段 1 的升级目标：最终档（下到这一档就算升级完成）
         for episode in target:
             key = self._key(season, episode, is_movie)
             record = state.get(key) or {}
             if self._as_int(record.get("stage"), STAGE_NEW) != STAGE_LOW:
                 continue
-            tier = allowed.get(episode)
-            if not isinstance(tier, int):
-                continue
-            if tier > self._as_int(record.get("first"), UNSET_PRIORITY):
-                record["target"] = tier
+            record["target"] = self._final_priority
 
         return kept, notes
 
@@ -557,6 +545,9 @@ class WashTwice(_PluginBase):
                 {
                     "context": context,
                     "pri": priority,
+                    "pix": self._resolution_rank(
+                        getattr(getattr(context, "meta_info", None), "resource_pix", None)
+                    ),
                     "episodes": self._context_episodes(context, target_set, is_movie),
                 }
             )
@@ -608,12 +599,14 @@ class WashTwice(_PluginBase):
 
     def _allowed_priorities(
             self,
+            entries: List[Dict[str, Any]],
             priorities_by_episode: Dict[int, List[int]],
             state: Dict[str, Dict[str, Any]],
             season: int,
             is_movie: bool,
             cap: bool,
-    ) -> Dict[int, Optional[int]]:
+            resolution_rank: Optional[int],
+    ) -> Dict[int, Any]:
         """每集本轮允许的优先级。
 
         None 表示拦掉该集的全部候选；ALL_PRIORITIES 表示不做档位限制。
@@ -624,13 +617,24 @@ class WashTwice(_PluginBase):
             stage = self._as_int(record.get("stage"), STAGE_NEW)
             if stage >= STAGE_DONE:
                 # 洗版订阅：彻底拦掉，保证每集只下两次；
-                # 非洗版订阅：宿主靠缺失集重下，永久拦截会让删掉的文件再也下不回来
-                allowed[episode] = None if cap else ALL_PRIORITIES
+                # 非洗版订阅：宿主靠缺失集重下，永久拦截会让删掉的文件再也下不回来。
+                # 「capped」表示宿主侧已经是 100（进度洗版或看完即删写进去的），同样拦掉。
+                allowed[episode] = None if (cap or record.get("capped")) else ALL_PRIORITIES
                 continue
-            if stage <= STAGE_NEW and self._lowest_first:
-                allowed[episode] = min(candidates)
+            if stage <= STAGE_NEW:
+                if self._lowest_first:
+                    # 阶段 0：首发只下本批最低档，先拿到更新最快的那一版
+                    allowed[episode] = self._lowest_priority(entries, episode, candidates, resolution_rank)
+                else:
+                    # 阶段 0（不限最低档）：首发直接取本批最高档
+                    allowed[episode] = max(candidates)
             else:
-                allowed[episode] = max(candidates)
+                # 阶段 1：只等最终档（默认宿主规则组首层 pri_order = 100，即该剧最高档版本）。
+                # 最终档还没出现时全部拦掉、保持等待，不因为「本批最高档就是已下档」提前收尾，
+                # 否则最高画质版本晚几周发布时就永远拿不到了。
+                allowed[episode] = (
+                    self._final_priority if self._final_priority in candidates else None
+                )
         return allowed
 
     @staticmethod
@@ -675,6 +679,13 @@ class WashTwice(_PluginBase):
                 if stage != STAGE_NEW:
                     state[key] = {"stage": STAGE_NEW, "first": UNSET_PRIORITY,
                                   "target": UNSET_PRIORITY, "prev": None}
+                continue
+
+            if current >= BEST_VERSION_DONE_PRIORITY:
+                # 宿主侧已是「洗版完成」（进度洗版 / 看完即删写的，或用户手工设的）：
+                # 该集不再参与任何洗版，直接进入阶段 2 并标记 capped
+                record["stage"] = STAGE_DONE
+                record["capped"] = True
                 continue
 
             if stage <= STAGE_NEW:
@@ -990,9 +1001,62 @@ class WashTwice(_PluginBase):
             "dry_run": self._dry_run,
             "lowest_first": self._lowest_first,
             "cap_after_upgrade": self._cap_after_upgrade,
+            "final_priority": self._final_priority,
             "handle_tv": self._handle_tv,
             "handle_movie": self._handle_movie,
         }
+
+    @staticmethod
+    def _lowest_priority(
+            entries: List[Dict[str, Any]],
+            episode: int,
+            candidates: List[int],
+            resolution_rank: Optional[int],
+    ) -> int:
+        """本集「最低档」的优先级。
+
+        订阅限定了分辨率（例如 4K）时，只在该分辨率的候选里取最低档，
+        避免订阅设了 4K 却从 1080p 回退层下单；该分辨率没有候选时退回全批最低档。
+
+        :param entries: 本批候选
+        :param episode: 集号
+        :param candidates: 本集出现过的优先级
+        :param resolution_rank: 订阅限定的分辨率档位，None 表示不限制
+        :return: 允许的优先级
+        """
+        if resolution_rank is not None:
+            matched = [
+                entry["pri"] for entry in entries
+                if entry.get("episodes") and episode in entry["episodes"]
+                and entry.get("pix") == resolution_rank
+            ]
+            if matched:
+                return min(matched)
+        return min(candidates)
+
+    @staticmethod
+    def _resolution_rank(value: Any) -> Optional[int]:
+        """把分辨率标识归一化成可比数值（4K/2160p -> 2160）。
+
+        :param value: 订阅的 resolution 或候选的 resource_pix
+        :return: 归一化后的画面高度，无法识别时返回 None
+        """
+        text = str(value or "").strip().lower().replace(" ", "")
+        if not text:
+            return None
+        if text.endswith("i"):
+            text = text[:-1]
+        aliases = {
+            "8k": 4320, "4k": 2160, "uhd": 2160,
+            "2k": 1440, "fhd": 1080, "hd": 720, "sd": 480,
+        }
+        if text in aliases:
+            return aliases[text]
+        if text.endswith("p") or text.endswith("k"):
+            text = text[:-1]
+        if text.isdigit():
+            return int(text)
+        return None
 
     @staticmethod
     def _as_int(value: Any, default: int) -> int:

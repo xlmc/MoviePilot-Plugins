@@ -1,7 +1,5 @@
 # MoviePilot 看完即删插件
 
-> **已并入「洗版管家」（WashManager）**：新装用户请直接安装 [洗版管家](../../plugins.v3/washmanager/README.md)。本插件保持可用但不再更新；升级到 v3.1.0 / v2.1.0 后首次加载会发一条迁移通知（只发一次）。
-
 MoviePilot V3 插件：媒体服务器（Emby / Jellyfin）上**看过的集**自动清理——先让订阅不再把它当成缺失集，再删掉媒体库文件、刮削文件、空目录、媒体服务器条目与整理记录。
 
 本实现基于 V3 稳定 SDK：`app.sdk.plugin` / `app.sdk.config` / `app.sdk.logging` / `app.sdk.services` / `app.sdk.network`，订阅读写走 `app.db.oper.subscribe.SubscribeOper`，整理记录走 `app.db.oper.transferhistory.TransferHistoryOper`，不依赖 SessionFactory 与宿主 Model。

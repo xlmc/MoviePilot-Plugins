@@ -1,7 +1,5 @@
 # MoviePilot 播放进度洗版插件
 
-> **已并入「洗版管家」（WashManager）**：新装用户请直接安装 [洗版管家](../../plugins.v3/washmanager/README.md)。本插件保持可用但不再更新；升级到 v3.1.0 / v2.1.0 后首次加载会发一条迁移通知（只发一次）。
-
 MoviePilot V3 插件：按媒体服务器（Emby / Jellyfin）上的**分集播放进度**决定订阅是否继续洗版。
 
 洗版（best_version）的完成判定由宿主的「分集优先级」驱动：某集的 `episode_priority` 等于 100 即视为该集洗版完成、不再搜索更高版本；电影看 `current_priority`。插件读取播放进度，把已经看过的集写成 100，宿主的洗版流程自然跳过它们。

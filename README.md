@@ -9,10 +9,9 @@
 | <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v2.0.0 | v3.1.0 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速 |
 | <img src="icons/clean.png" width="26" align="top"/> **[源文件联动清理](#源文件联动清理-scrapefileclean)** | v1.0.7（官方仓库） | v2.1.0 | 手动删除源文件后，自动联动清理硬链接、刮削文件、转移记录与媒体服务器条目 |
 | <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emosupload)** | v2.1.0 | v3.0.0 | MoviePilot 下载完成后自动上传源文件到 EMOS 资源站 |
-| <img src="icons/washmanager.svg" width="26" align="top"/> **[洗版管家](#洗版管家-washmanager)** | v2.2.0 | v3.2.0 | 三合一：播放进度洗版 + 洗版两次 + 看完即删，三个功能各带独立开关 |
-| <img src="icons/playbackbestversion.svg" width="26" align="top"/> **[播放进度洗版](#播放进度洗版-playbackbestversion)** | v2.1.0 | v3.1.0 | 已并入「洗版管家」；按分集播放进度决定是否继续洗版 |
-| <img src="icons/watchedcleaner.svg" width="26" align="top"/> **[看完即删](#看完即删-watchedcleaner)** | v2.1.0 | v3.1.0 | 已并入「洗版管家」；看完的集自动清理，且不会被重新下载 |
-| <img src="icons/washtwice.svg" width="26" align="top"/> **[洗版两次](#洗版两次-washtwice)** | v2.1.0 | v3.1.0 | 已并入「洗版管家」；每集只下载两次 |
+| <img src="icons/playbackbestversion.svg" width="26" align="top"/> **[播放进度洗版](#播放进度洗版-playbackbestversion)** | v2.2.0 | v3.2.0 | 按分集播放进度决定是否继续洗版 |
+| <img src="icons/watchedcleaner.svg" width="26" align="top"/> **[看完即删](#看完即删-watchedcleaner)** | v2.2.0 | v3.2.0 | 看完的集自动清理，且不会被重新下载 |
+| <img src="icons/washtwice.svg" width="26" align="top"/> **[洗版两次](#洗版两次-washtwice)** | v2.2.0 | v3.2.0 | 首发最低档，第二次只升到最终档 |
 
 ## 安装
 
@@ -102,25 +101,7 @@ MoviePilot 入库完成后自动将源文件上传到 EMOS（Emby 资源站上�
 
 详细功能与配置说明见 [plugins.v2/emosupload/README.md](plugins.v2/emosupload/README.md)（V2）与 [plugins.v3/emosupload/README.md](plugins.v3/emosupload/README.md)（V3）。
 
-## 洗版管家 WashManager
-
-把三个洗版相关插件合并成一个：**播放进度洗版**（看过的集不再升级）、**洗版两次**（每集最多两次机会）、**看完即删**（看完就清理）。三个功能各带独立开关，可单独启用，也可以只留其中一个。
-
-> 已安装下面三个旧插件的用户：装好「洗版管家」后把旧插件里的配置在新插件里重新设置一遍即可，旧插件的配置**不会**自动继承。
-
-主要特性：
-
-- **播放进度洗版**：读 Emby / Jellyfin 的分集播放进度，把看过的集写成 `episode_priority = 100`，宿主的洗版流程自然跳过它们
-- **洗版两次**：在资源选择环节把每集候选收窄成「首发最低档 → 升级一次到最高档 → 之后全拦」，收尾写 100；订阅设了分辨率（如 4K）时首发只在该分辨率里取最低档，不会从 1080p 回退层下单
-- **看完即删**：先改订阅（前移开始集数 / 写 100）再删文件，避免「删了又下、下了又删」的死循环
-- 一轮只读一次媒体服务器：进度洗版与看完即删共用同一份播放进度，先算洗版再算清理，不会互相覆盖刚写入的优先级
-- 试运行默认开启，三个功能各自生效、各自可关；通知渠道按宿主渠道枚举发送
-
-详细功能与配置说明见 [plugins.v2/washmanager/README.md](plugins.v2/washmanager/README.md)（V2）与 [plugins.v3/washmanager/README.md](plugins.v3/washmanager/README.md)（V3）。
-
 ## 播放进度洗版 PlaybackBestVersion
-
-> **已并入「洗版管家」**：新装用户请直接装 [洗版管家](#洗版管家-washmanager)。本插件保持可用但不再更新；升级到 v3.1.0 / v2.1.0 后首次加载会发一条迁移通知（只发一次）。
 
 按媒体服务器（Emby / Jellyfin）上的**分集播放进度**决定订阅是否继续洗版：某集已经看过，就不必再为它升级替换。
 
@@ -138,8 +119,6 @@ MoviePilot 入库完成后自动将源文件上传到 EMOS（Emby 资源站上�
 详细功能与配置说明见 [plugins.v2/playbackbestversion/README.md](plugins.v2/playbackbestversion/README.md)（V2）与 [plugins.v3/playbackbestversion/README.md](plugins.v3/playbackbestversion/README.md)（V3）。
 
 ## 看完即删 WatchedCleaner
-
-> **已并入「洗版管家」**：新装用户请直接装 [洗版管家](#洗版管家-washmanager)。本插件保持可用但不再更新；升级到 v3.1.0 / v2.1.0 后首次加载会发一条迁移通知（只发一次）。
 
 媒体服务器（Emby / Jellyfin）上**看完的集**自动清理：先让订阅不再把已删的集当成缺失，再删掉媒体库文件、刮削文件、空目录、媒体服务器条目与整理记录。
 
@@ -159,13 +138,11 @@ MoviePilot 入库完成后自动将源文件上传到 EMOS（Emby 资源站上�
 
 ## 洗版两次 WashTwice
 
-> **已并入「洗版管家」**：新装用户请直接装 [洗版管家](#洗版管家-washmanager)。本插件保持可用但不再更新；升级到 v3.1.0 / v2.1.0 后首次加载会发一条迁移通知（只发一次）。
-
-宿主的洗版没有次数上限：某集的 `episode_priority` 没到 100，每轮搜索到更高优先级的候选就会重新下载替换。本插件在**资源选择**环节把每集的候选收窄成三次机会——首发一次、升级一次、之后不再洗版。
+宿主的洗版没有次数上限：某集的 `episode_priority` 没到 100，每轮搜索到更高优先级的候选就会重新下载替换。本插件在**资源选择**环节把每集的候选收窄成两次机会——首发一次、升到最终档一次、之后不再洗版。
 
 主要特性：
 
-- **三阶段过滤**：阶段 0 只放行本批优先级最低的候选，阶段 1 只放行最高的一档，阶段 2 全部拦掉
+- **三阶段过滤**：阶段 0 只放行本批优先级最低的候选（订阅设了分辨率时只在该分辨率里取最低档），阶段 1 只放行**最终档**（默认优先级 100，即规则组最高档），本批没有最终档就保持等待，阶段 2 全部拦掉
 - **收尾写 100**：升级完成后写 `episode_priority = 100`（电影写 `current_priority = 100`）并重算整部优先级，宿主此后不再为该集搜索
 - **阶段靠对账**：用宿主自己维护的下载事实（`episode_priority` / `current_priority`）判断阶段，不在选择时记账——下载失败阶段不动，下一轮自动重试，不会被永久卡死
 - **只处理订阅来源**：手动搜索、RSS 等批次一律放行；整包资源（拿不到集数信息）原样放行
