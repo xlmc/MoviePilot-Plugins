@@ -6,13 +6,12 @@
 
 | 插件 | V2 版本 | V3 版本 | 简介 |
 | --- | --- | --- | --- |
-| <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v2.0.0 | v3.1.0 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速 |
+| <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v2.1.0 | v3.2.0 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速；另有 BT 站点种子分支（默认关闭） |
 | <img src="icons/clean.png" width="26" align="top"/> **[源文件联动清理](#源文件联动清理-scrapefileclean)** | v1.0.7（官方仓库） | v2.1.0 | 手动删除源文件后，自动联动清理硬链接、刮削文件、转移记录与媒体服务器条目 |
 | <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emosupload)** | v2.1.0 | v3.0.0 | MoviePilot 下载完成后自动上传源文件到 EMOS 资源站 |
 | <img src="icons/playbackbestversion.svg" width="26" align="top"/> **[播放进度洗版](#播放进度洗版-playbackbestversion)** | v2.2.0 | v3.2.0 | 按分集播放进度决定是否继续洗版 |
 | <img src="icons/watchedcleaner.svg" width="26" align="top"/> **[看完即删](#看完即删-watchedcleaner)** | v2.2.0 | v3.2.0 | 看完的集自动清理，且不会被重新下载 |
 | <img src="icons/washtwice.svg" width="26" align="top"/> **[洗版两次](#洗版两次-washtwice)** | v2.4.0 | v3.4.0 | 首发最低档，第二次升到规则组首层（最高档） |
-| <img src="icons/btseedmanager.svg" width="26" align="top"/> **[BT种子管家](#bt种子管家-btseedmanager)** | v2.0.0 | v3.0.0 | 只对 BT 站点种子单独限速、做种到点只暂停，PT 一律不动 |
 
 ## 安装
 
@@ -54,7 +53,7 @@ V3 宿主（MoviePilot >= 3.0.0）读取 package.v3.json 与 plugins.v3/；V2 �
 
 ## QB上传限速 QbUploadLimiter
 
-仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后，自动限制该种子的上传速度（支持 qBittorrent / Transmission），停用/卸载自动恢复不限速。
+仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后，自动限制该种子的上传速度（支持 qBittorrent / Transmission），停用/卸载自动恢复不限速。另有独立的 **BT 站点种子分支**（默认关闭）：只对公开站种子单独限速、做种时长到点只暂停，PT 种子与下载器全局设置一律不动。
 
 主要特性：
 
@@ -66,6 +65,9 @@ V3 宿主（MoviePilot >= 3.0.0）读取 package.v3.json 与 plugins.v3/；V2 �
 - 状态变化通知（限速 / AI 接管 / AI 取消接管），支持多选通知渠道；同一颗种子的首次限速通知只发送一次（持久化记录，保存配置、更新插件、重启都不会重复推送）
 - **AI 智能限速**（可选）：复用 MoviePilot 系统设置里的大模型，按种子分享率、上传活跃度与站点账号分享率逐种子决策限速值；限速值收敛到「该种子实测上传能力砍 2~8 成」的区间并叠加合规下限，上限再与 qB 全局限速、线路实测带宽取小，支持每轮复核加限 / 减限 / 解限；大模型未配置或调用失败时自动回退阈值规则
 - AI 生效后点击插件卡片可进入种子状态详情页（状态统计 + 每种子明细）
+- **BT 站点种子分支**（可选，默认关闭）：与上面的分享率限速完全独立，可只开其一。只挑「站点管理」里 `public = 1` 的公开站种子，逐种子设置上传 / 下载限速（KB/s，0 = 不限），做种时长到点只暂停、不删任务不删文件；判定为 PT 的种子一个接口都不调用，也不修改下载器全局设置
+- BT 判定顺序：下载历史站点名 → 额外 BT / PT 名单 → tracker 域名（含子域）；只有公开 tracker 或没有 tracker 时无法与未登记的 PT 站区分，默认不动，可在表单开启「无法判定站点时按 BT 处理」
+- BT 分支带试运行开关、暂停清单页与 `/resume_bt` 恢复接口；停用 / 卸载时自动把暂停过的种子恢复做种
 
 详细功能与配置说明见 [plugins.v2/qbuploadlimiter/README.md](plugins.v2/qbuploadlimiter/README.md)（V2）与 [plugins.v3/qbuploadlimiter/README.md](plugins.v3/qbuploadlimiter/README.md)（V3）。
 
@@ -152,20 +154,6 @@ MoviePilot 入库完成后自动将源文件上传到 EMOS（Emby 资源站上�
 - 试运行模式（默认开启）：只记日志不改候选、不写库
 
 详细功能与配置说明见 [plugins.v2/washtwice/README.md](plugins.v2/washtwice/README.md)（V2）与 [plugins.v3/washtwice/README.md](plugins.v3/washtwice/README.md)（V3）。
-
-## BT种子管家 BtSeedManager
-
-PT 站有分享率考核，做种要久、速度要给；BT 站（公开站）反过来，长期挂着只是白占上传带宽和队列。而下载器的限速是**全局**的，为 BT 限速会连 PT 一起限掉。本插件用下载器的**单种子接口**逐种子处理，只挑 BT 站点来的种子。
-
-主要特性：
-
-- **只动 BT**：下载历史里的站点名命中「站点管理」中 `public = 1` 的站点即判为 BT；命中 PT 站点直接跳过；没有下载历史时看 tracker 域名，属于 PT 站点域名（含子域）即豁免，其余（公开 tracker、纯 DHT）按 BT 处理；可额外补 BT / PT 白名单
-- **每种子限速**：对 BT 种子调用 `change_torrent` 设置上传 / 下载限速（KB/s），只写在该种子上，**不修改下载器全局限速**；目标值与上一轮相同就跳过，不反复调用
-- **做种时长到点只暂停**：只处理已下载完成（进度 100%）的种子，做种秒数达到上限后调用 `stop_torrents` 暂停，**不删任务、不删文件**；已暂停的记入清单，可一键恢复（恢复后进入豁免清单，不再自动暂停）
-- **PT 保护**：判定为 PT 的种子一个接口都不调用；也可用「排除标签」把某些种子整体排除
-- 支持试运行（只打印不执行）、详情页暂停清单、通知，以及 `/run`、`/status`、`/resume`、`/reset` 接口
-
-详细功能与配置说明见 [plugins.v2/btseedmanager/README.md](plugins.v2/btseedmanager/README.md)（V2）与 [plugins.v3/btseedmanager/README.md](plugins.v3/btseedmanager/README.md)（V3）。
 
 ## 许可
 

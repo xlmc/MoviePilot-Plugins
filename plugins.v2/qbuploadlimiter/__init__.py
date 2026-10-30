@@ -40,12 +40,16 @@ class QbUploadLimiter(_PluginBase):
     当 qBittorrent / Transmission 下载器中已下载的种子分享率达到设定阈值时，
     自动将该种子的上传速度限制为指定值（KB/s）。
     分享率 = 上传量 / 下载量，阈值为正数（最多 1 位小数），达到阈值后自动限速。
+
+    另有一条独立的「BT 站点种子」分支（默认关闭）：只挑公开站（站点管理里 public = 1）
+    的种子逐种子设置上传/下载限速，做种时长到点只暂停、不删任务不删文件；
+    判定为 PT 的种子一个接口都不调用，也不修改下载器全局设置。
     """
 
     plugin_name = "QB上传限速"
-    plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
+    plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。另有 BT 站点种子分支（默认关闭）：只对公开站种子单独限速、做种时长到点只暂停，PT 种子与下载器全局设置一律不动。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "2.0.0"
+    plugin_version = "2.1.0"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     project_url = "https://github.com/xlmc/MoviePilot-Plugins"
@@ -81,6 +85,33 @@ class QbUploadLimiter(_PluginBase):
     _site_domains: Dict[str, str] = {}
     # 站点名称(小写) -> 原始名称，用于标签/分类匹配
     _site_names: Dict[str, str] = {}
+
+    # ---- BT 站点种子分支（公开站）----
+    # 是否启用 BT 分支；与上面的分享率限速相互独立，可只开其一
+    _bt_enabled = False
+    # BT 种子上传限速 KB/s，0 表示不限速
+    _bt_upload_limit = 0
+    # BT 种子下载限速 KB/s，0 表示不限制
+    _bt_download_limit = 0
+    # BT 种子做种时长上限（小时，可小数），到点只暂停；0 表示不限
+    _bt_seed_hours = 0.0
+    # 排除标签：带这些标签的种子整体跳过
+    _bt_exclude_tags: List[str] = []
+    # 额外 BT / PT 名单（站点名或 tracker 域名），可覆盖站点表判定
+    _bt_extra_bt: List[str] = []
+    _bt_extra_pt: List[str] = []
+    # 无法判定站点时是否按 BT 处理（默认 False：判不出就不动，避免误伤 PT）
+    _bt_include_unknown = False
+    # BT 分支试运行：只写日志不调用下载器
+    _bt_dry_run = False
+    # BT 分支的站点索引（公开站/PT 站的名称与域名集合），每轮检测前重建
+    _bt_sites: Dict[str, Any] = {}
+    # 已暂停的 BT 种子：{下载器名称: {种子Hash: {name, hours, at}}}
+    _bt_paused: Dict[str, Dict[str, Any]] = {}
+    # 用户手动恢复过、不再自动处理的 BT 种子：{下载器名称: {种子Hash}}
+    _bt_resumed: Dict[str, set] = {}
+    # 本插件给 BT 种子设过的限速：{下载器名称: {种子Hash: "up" / "dl" / "up/dl"}}
+    _bt_limits: Dict[str, Dict[str, str]] = {}
 
     _scheduler = None
     _last_result = None
@@ -153,6 +184,10 @@ class QbUploadLimiter(_PluginBase):
     _RESTORE_DATA_KEY = "restore_hashes"
     # 已通知种子（跨会话保留，避免保存配置/更新插件后重复通知）
     _NOTIFIED_DATA_KEY = "notified_hashes"
+    # BT 分支持久化数据键：已暂停 / 已手动恢复 / 已设限速
+    _BT_PAUSED_KEY = "bt_paused"
+    _BT_RESUMED_KEY = "bt_resumed"
+    _BT_LIMITS_KEY = "bt_limits"
 
     # 通知渠道类型（MoviePilot 通知配置的 type）-> MessageChannel 枚举
     _NOTIFY_TYPE_MAP = {
@@ -204,6 +239,16 @@ class QbUploadLimiter(_PluginBase):
         # 站点映射（域名 -> 名称、名称小写 -> 名称）只构建一次，供本轮所有种子复用
         self._site_domains = self._load_site_domains()
         self._site_names = {name.lower(): name for name in self._site_domains.values() if name}
+        # BT 站点种子分支配置（与分享率限速相互独立）
+        self._bt_enabled = bool(config.get("bt_enabled"))
+        self._bt_upload_limit = max(self._to_int(config.get("bt_upload_limit"), 0), 0)
+        self._bt_download_limit = max(self._to_int(config.get("bt_download_limit"), 0), 0)
+        self._bt_seed_hours = self._to_hours(config.get("bt_seed_hours"), 0.0)
+        self._bt_exclude_tags = self._split_words(config.get("bt_exclude_tags"))
+        self._bt_extra_bt = self._split_words(config.get("bt_extra_bt"))
+        self._bt_extra_pt = self._split_words(config.get("bt_extra_pt"))
+        self._bt_include_unknown = bool(config.get("bt_include_unknown"))
+        self._bt_dry_run = bool(config.get("bt_dry_run"))
 
         # 规范化持久化：修正历史遗留的非法配置（如分享率阈值 0、字符串数字等），
         # 避免非法值回显到表单或影响后续逻辑
@@ -226,6 +271,11 @@ class QbUploadLimiter(_PluginBase):
         # 确保已限速种子在停用/卸载时可兜底恢复为不限速
         self._restore_hashes = self._load_set_map(self._RESTORE_DATA_KEY)
         self._notified_hashes = self._load_set_map(self._NOTIFIED_DATA_KEY)
+        # BT 分支记录同样跨会话保留：暂停清单用于详情页与一键恢复，
+        # 限速归属用于停用/卸载时把上传/下载限速一并恢复为不限速
+        self._bt_paused = self._load_dict_map(self._BT_PAUSED_KEY)
+        self._bt_resumed = self._load_set_map(self._BT_RESUMED_KEY)
+        self._bt_limits = self._load_dict_map(self._BT_LIMITS_KEY)
 
         # 停用插件或启用状态下修改配置时，先恢复旧配置下已限速的种子为不限速，
         # 避免清空记录后旧限速丢失归属、停用/卸载时无法恢复
@@ -300,6 +350,11 @@ class QbUploadLimiter(_PluginBase):
             self._restore_limits()
         except Exception as err:
             logger.error(f"{self.LOG_TAG}恢复上传不限速失败：{err}")
+        # BT 分支暂停过的种子一并恢复做种：插件停用/卸载后不应留下暂停状态
+        try:
+            self._resume_bt_paused()
+        except Exception as err:
+            logger.error(f"{self.LOG_TAG}恢复 BT 种子做种失败：{err}")
         # 持久化恢复结果：恢复失败项保留，下次停用/卸载时继续重试
         self._save_set_map(self._RESTORE_DATA_KEY, self._restore_hashes)
         # 仍有待恢复记录时启动兜底恢复重试任务：下载器短暂离线导致的恢复失败，
@@ -312,8 +367,16 @@ class QbUploadLimiter(_PluginBase):
         return []
 
     def get_api(self) -> List[Dict[str, Any]]:
-        """不注册额外 API。"""
-        return []
+        """注册 BT 分支的恢复接口。"""
+        return [
+            {
+                "path": "/resume_bt",
+                "endpoint": self.api_resume_bt,
+                "methods": ["POST"],
+                "summary": "恢复被 BT 分支暂停的种子",
+                "description": "不传参数时恢复全部已暂停的 BT 种子；恢复后进入豁免清单，不再自动暂停",
+            },
+        ]
 
     def get_state(self) -> bool:
         """返回插件启用状态。"""
@@ -333,9 +396,10 @@ class QbUploadLimiter(_PluginBase):
         并解析成功）时返回状态页面，点击插件卡片进入该页查看每个种子的状态；
         未成功开启 AI 时返回 None，保持点击卡片直接进入插件设置的原有行为。
         """
-        # AI 未启用或未成功生效：无详情页，点击卡片直接进设置
+        # AI 未启用或未成功生效时，若 BT 分支暂停过种子仍提供暂停清单页；
+        # 都没有时无详情页，点击卡片直接进设置
         if not self._ai_enabled or not self._ai_active:
-            return None
+            return self._bt_page()
         # 汇总各下载器的种子状态快照
         rows: List[dict] = []
         for service_name, snapshot in self._seed_page_snapshot.items():
@@ -731,6 +795,174 @@ class QbUploadLimiter(_PluginBase):
                             }
                         ],
                     },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {"type": "info", "variant": "tonal", "density": "compact", "class": "mb-2"},
+                                        "content": [
+                                            {
+                                                "component": "div",
+                                                "text": "BT 站点种子（公开站）：与上面的分享率限速相互独立，可只开其一。只挑「站点管理」里 public = 1 的站点来的种子，逐种子设置上传/下载限速（不改下载器全局设置），做种时长到点只暂停、不删任务不删文件；判定为 PT 的种子一个接口都不调用。",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {"component": "VSwitch", "props": {"model": "bt_enabled", "label": "启用 BT 种子分支"}}
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "bt_upload_limit",
+                                            "label": "BT 上传限速（KB/s）",
+                                            "placeholder": "0 = 不限速",
+                                            "type": "number",
+                                            "min": 0,
+                                            "step": 1,
+                                            "hide-spin-buttons": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "bt_download_limit",
+                                            "label": "BT 下载限速（KB/s）",
+                                            "placeholder": "0 = 不限制",
+                                            "type": "number",
+                                            "min": 0,
+                                            "step": 1,
+                                            "hide-spin-buttons": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "bt_seed_hours",
+                                            "label": "BT 做种时长上限（小时）",
+                                            "placeholder": "0 = 不限，到点只暂停",
+                                            "type": "number",
+                                            "min": 0,
+                                            "step": 0.5,
+                                            "hide-spin-buttons": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {"model": "bt_include_unknown", "label": "无法判定站点（公开 tracker / 无 tracker）时按 BT 处理"},
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {"model": "bt_dry_run", "label": "BT 分支试运行（只记日志）"},
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "bt_exclude_tags",
+                                            "label": "BT 分支排除标签",
+                                            "placeholder": "逗号或换行分隔，带这些标签的种子整体跳过",
+                                            "rows": 2,
+                                            "auto-grow": True,
+                                            "clearable": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "bt_extra_bt",
+                                            "label": "额外 BT 站点（站点名或 tracker 域名）",
+                                            "placeholder": "逗号或换行分隔；站点表判定不出来时用它补充",
+                                            "rows": 2,
+                                            "auto-grow": True,
+                                            "clearable": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "bt_extra_pt",
+                                            "label": "额外 PT 站点（站点名或 tracker 域名）",
+                                            "placeholder": "逗号或换行分隔；填在这里的站点一律豁免，不动",
+                                            "rows": 2,
+                                            "auto-grow": True,
+                                            "clearable": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
                 ],
             }
         ], self._current_config()
@@ -751,6 +983,15 @@ class QbUploadLimiter(_PluginBase):
             "ai_site_ratio_threshold": self._ai_site_ratio_threshold,
             "downloaders": self._downloaders,
             "sites": self._sites,
+            "bt_enabled": self._bt_enabled,
+            "bt_upload_limit": self._bt_upload_limit,
+            "bt_download_limit": self._bt_download_limit,
+            "bt_seed_hours": self._bt_seed_hours,
+            "bt_exclude_tags": "\n".join(self._bt_exclude_tags),
+            "bt_extra_bt": "\n".join(self._bt_extra_bt),
+            "bt_extra_pt": "\n".join(self._bt_extra_pt),
+            "bt_include_unknown": self._bt_include_unknown,
+            "bt_dry_run": self._bt_dry_run,
         }
 
     # ---------------------------------------------------------------- 核心逻辑
@@ -919,8 +1160,12 @@ class QbUploadLimiter(_PluginBase):
 
         threshold = self._to_ratio(share_ratio, 1.0)
         limit = max(self._to_int(upload_limit, 0), 0)
-        # 上传速度为 0：分享率达到阈值后不做限速处理
-        if limit == 0:
+        # BT 站点种子分支：与分享率限速相互独立，只有确实配置了动作才执行
+        bt_active = self._bt_active()
+        if bt_active:
+            self._bt_sites = self._bt_site_index()
+        # 上传速度为 0：分享率达到阈值后不做限速处理（BT 分支仍可独立工作）
+        if limit == 0 and not bt_active:
             # 顺带重试所有待恢复记录：切换为 0 时若下载器离线导致恢复失败，
             # 下载器重连后每轮检测都能自动恢复旧限速，不依赖重新启用插件
             self._retry_all_stuck_restores()
@@ -951,6 +1196,21 @@ class QbUploadLimiter(_PluginBase):
                     continue
                 # 空列表是下载器中没有任何种子的合法成功结果，不是获取失败
                 torrents = torrents or []
+                # BT 站点种子分支：按站点判定挑出 BT 种子后逐种子限速/暂停，
+                # 完全不走下面的入库门禁、站点筛选与分享率逻辑
+                if bt_active:
+                    summary_lines.extend(
+                        self._process_bt_service(
+                            service_name=service_name,
+                            downloader=downloader,
+                            downloader_type=downloader_type,
+                            torrents=torrents,
+                            channel=channel,
+                        )
+                    )
+                # 上传速度为 0 时跳过分享率限速流程（BT 分支已在上方独立处理）
+                if limit == 0:
+                    continue
 
                 # 入库成功门禁：先批量查询 MP 整理入库记录，得到「已入库成功」的种子集合；
                 # 种子入库成功前对插件完全不可见（不监控、不限速），等同于插件未开启
@@ -1951,6 +2211,478 @@ class QbUploadLimiter(_PluginBase):
             idx += 1
         return f"{value:.2f} {units[idx]}"
 
+    # ---------------------------------------------------------------- BT 站点种子
+
+    def _bt_active(self) -> bool:
+        """BT 分支是否配置了可执行动作（启用且至少有一项动作）。"""
+        return bool(
+            self._bt_enabled
+            and (self._bt_upload_limit > 0 or self._bt_download_limit > 0 or self._bt_seed_hours > 0)
+        )
+
+    def _bt_site_index(self) -> Dict[str, Any]:
+        """
+        构建 BT / PT 站点索引，每轮检测前重建一次。
+
+        MoviePilot 站点管理里 public = 1 即公开站（BT），其余为 PT；
+        两边的域名集合同时用于 tracker 域名匹配。
+        """
+        bt_names: Set[str] = set()
+        pt_names: Set[str] = set()
+        bt_domains: Set[str] = set()
+        pt_domains: Set[str] = set()
+        try:
+            from app.db.site_oper import SiteOper
+
+            for site in SiteOper().list() or []:
+                name = str(getattr(site, "name", "") or "").strip().lower()
+                if not name:
+                    continue
+                is_bt = self._to_int(getattr(site, "public", 0), 0) == 1
+                (bt_names if is_bt else pt_names).add(name)
+                for raw in (getattr(site, "domain", "") or "", getattr(site, "url", "") or ""):
+                    domain = self._bt_domain(raw)
+                    if domain:
+                        (bt_domains if is_bt else pt_domains).add(domain)
+        except Exception as err:
+            logger.warning(f"{self.LOG_TAG}读取站点列表失败，BT/PT 判定仅依赖额外名单：{err}")
+        return {
+            "bt_names": bt_names,
+            "pt_names": pt_names,
+            "bt_domains": bt_domains,
+            "pt_domains": pt_domains,
+        }
+
+    @staticmethod
+    def _bt_domain(raw: Any) -> str:
+        """把站点域名或地址规范化为纯域名（小写、去协议与路径）。"""
+        text = str(raw or "").strip()
+        if not text:
+            return ""
+        if "://" in text:
+            return QbUploadLimiter._normalize_domain(text)
+        return text.strip("/").lower()
+
+    @staticmethod
+    def _host_in(host: str, domain: str) -> bool:
+        """判断 host 是否等于 domain 或属于其子域。"""
+        host = (host or "").strip().lower()
+        domain = (domain or "").strip().lower()
+        if not host or not domain:
+            return False
+        return host == domain or host.endswith("." + domain)
+
+    def _bt_extra_match(self, value: str, items: List[str]) -> bool:
+        """判断站点名或 tracker 域名是否命中额外名单（站点名不分大小写，域名含子域）。"""
+        text = (value or "").strip().lower()
+        if not text:
+            return False
+        for item in items or []:
+            candidate = str(item or "").strip().lower()
+            if not candidate:
+                continue
+            if candidate == text:
+                return True
+            if "." in candidate and self._host_in(text, candidate):
+                return True
+        return False
+
+    def _bt_tracker_hosts(self, torrent: Any, downloader_type: str) -> List[str]:
+        """取种子 tracker 的域名列表（去重、保持顺序）。"""
+        hosts: List[str] = []
+        for url in self._torrent_tracker_urls(torrent, downloader_type):
+            host = self._bt_domain(url)
+            if host and host not in hosts:
+                hosts.append(host)
+        return hosts
+
+    def _bt_classify(self, torrent: Any, downloader_type: str, site: str) -> str:
+        """
+        判定种子属于 BT（公开站）还是 PT。
+
+        顺序：下载历史站点名 -> 额外 BT/PT 名单 -> tracker 域名（含子域）。
+        只有公开 tracker 或没有 tracker 时无法与未登记的 PT 站区分，
+        按「无法识别」处理：默认不动，开启「无法判定站点时按 BT 处理」才按 BT 处理。
+
+        :return: "bt" / "pt" / ""
+        """
+        index = self._bt_sites or {}
+        name = (site or "").strip().lower()
+        if name:
+            if name in index.get("bt_names", set()):
+                return "bt"
+            if name in index.get("pt_names", set()):
+                return "pt"
+        if self._bt_extra_match(name, self._bt_extra_bt):
+            return "bt"
+        if self._bt_extra_match(name, self._bt_extra_pt):
+            return "pt"
+        hosts = self._bt_tracker_hosts(torrent, downloader_type)
+        for host in hosts:
+            if self._bt_extra_match(host, self._bt_extra_bt):
+                return "bt"
+            if self._bt_extra_match(host, self._bt_extra_pt):
+                return "pt"
+        for host in hosts:
+            for domain in index.get("bt_domains", set()):
+                if self._host_in(host, domain):
+                    return "bt"
+        for host in hosts:
+            for domain in index.get("pt_domains", set()):
+                if self._host_in(host, domain):
+                    return "pt"
+        # 只有公开 tracker（不属于任何 PT 站点域名）或完全没有 tracker 时，
+        # 无法与未登记的 PT 站区分，一律按「无法识别」处理：
+        # 默认不动，开启「无法判定站点时按 BT 处理」才按 BT 处理
+        return "bt" if self._bt_include_unknown else ""
+
+    def _bt_excluded(self, torrent: Any, downloader_type: str) -> bool:
+        """种子是否命中 BT 分支的排除标签。"""
+        if not self._bt_exclude_tags:
+            return False
+        wanted = {str(tag).strip().lower() for tag in self._bt_exclude_tags if str(tag).strip()}
+        return any(str(tag).strip().lower() in wanted for tag in self._torrent_tags(torrent, downloader_type))
+
+    @staticmethod
+    def _bt_seeding_seconds(torrent: Any, downloader_type: str) -> int:
+        """获取种子已做种秒数，取不到时回退到「完成时间到现在」。"""
+        if downloader_type == "qbittorrent" and isinstance(torrent, dict):
+            try:
+                value = int(torrent.get("seeding_time") or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                return value
+        completed_at = QbUploadLimiter._torrent_completion_time(torrent, downloader_type)
+        if completed_at > 0:
+            return max(int(time.time()) - completed_at, 0)
+        return 0
+
+    @staticmethod
+    def _bt_is_stopped(torrent: Any, downloader_type: str) -> bool:
+        """判断种子是否已暂停/停止（qBittorrent 看 state，Transmission 看 status）。"""
+        if downloader_type == "qbittorrent":
+            if not isinstance(torrent, dict):
+                return False
+            state = str(torrent.get("state") or "").strip().lower()
+            return state in ("pauseddl", "pausedup", "stoppeddl", "stoppedup", "paused", "stopped")
+        try:
+            return int(getattr(torrent, "status", -1) or -1) == 0
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _bt_limit_kind(up_kb: int, dl_kb: int) -> str:
+        """把本轮目标限速编码成记录值：up / dl / up/dl。"""
+        parts = []
+        if up_kb > 0:
+            parts.append("up")
+        if dl_kb > 0:
+            parts.append("dl")
+        return "/".join(parts)
+
+    def _bt_limit_satisfied(
+        self,
+        service_name: str,
+        torrent: Any,
+        downloader_type: str,
+        up_kb: int,
+        dl_kb: int,
+    ) -> bool:
+        """
+        判断种子当前的限速是否已是本轮目标值，避免每轮重复调用下载器。
+
+        qBittorrent 直接读 up_limit / dl_limit（字节/秒）比对；
+        Transmission 读不到单种子限速，退化为「本插件上一轮设过的记录」。
+        """
+        torrent_hash = self._torrent_hash(torrent, downloader_type)
+        recorded = (self._bt_limits.get(service_name) or {}).get(torrent_hash, "")
+        if recorded != self._bt_limit_kind(up_kb, dl_kb):
+            return False
+        if downloader_type != "qbittorrent" or not isinstance(torrent, dict):
+            return True
+        try:
+            up_now = int(torrent.get("up_limit") or 0)
+            dl_now = int(torrent.get("dl_limit") or 0)
+        except (TypeError, ValueError):
+            return True
+        if up_kb > 0 and up_now != up_kb * 1024:
+            return False
+        if dl_kb > 0 and dl_now != dl_kb * 1024:
+            return False
+        return True
+
+    def _apply_bt_limit(
+        self,
+        service_name: str,
+        downloader: Any,
+        torrent_hash: str,
+        torrent_name: str,
+        up_kb: int,
+        dl_kb: int,
+    ) -> bool:
+        """给单颗 BT 种子设置上传/下载限速（只写在这颗种子上，不动全局设置）。"""
+        kwargs: Dict[str, Any] = {}
+        parts: List[str] = []
+        if up_kb > 0:
+            kwargs["upload_limit"] = up_kb
+            parts.append(f"上传 {self._format_limit(up_kb)}")
+        if dl_kb > 0:
+            kwargs["download_limit"] = dl_kb
+            parts.append(f"下载 {self._format_limit(dl_kb)}")
+        text = "、".join(parts)
+        if self._bt_dry_run:
+            logger.info(f"{self.LOG_TAG}[{service_name}] [试运行] BT 种子 [{torrent_name}] 将限速 {text}")
+            return True
+        try:
+            if not downloader.change_torrent(hash_string=torrent_hash, **kwargs):
+                logger.error(f"{self.LOG_TAG}[{service_name}] BT 种子 [{torrent_name}] 限速失败：下载器返回失败")
+                return False
+            logger.info(f"{self.LOG_TAG}[{service_name}] BT 种子 [{torrent_name}] 已限速 {text}")
+            return True
+        except Exception as err:
+            logger.error(f"{self.LOG_TAG}[{service_name}] BT 种子 [{torrent_name}] 限速失败：{err}")
+            return False
+
+    def _pause_bt_torrent(
+        self,
+        service_name: str,
+        downloader: Any,
+        torrent_hash: str,
+        torrent_name: str,
+        seeding_seconds: int,
+    ) -> bool:
+        """做种时长到点暂停种子（只暂停，不删任务、不删文件）。"""
+        hours = round(seeding_seconds / 3600, 2)
+        if self._bt_dry_run:
+            logger.info(
+                f"{self.LOG_TAG}[{service_name}] [试运行] BT 种子 [{torrent_name}] 做种已达 {hours:g} 小时，将暂停"
+            )
+            return True
+        try:
+            if not downloader.stop_torrents(ids=torrent_hash):
+                logger.error(f"{self.LOG_TAG}[{service_name}] BT 种子 [{torrent_name}] 暂停失败：下载器返回失败")
+                return False
+            logger.info(f"{self.LOG_TAG}[{service_name}] BT 种子 [{torrent_name}] 做种已达 {hours:g} 小时，已暂停")
+            return True
+        except Exception as err:
+            logger.error(f"{self.LOG_TAG}[{service_name}] BT 种子 [{torrent_name}] 暂停失败：{err}")
+            return False
+
+    def _process_bt_service(
+        self,
+        service_name: str,
+        downloader: Any,
+        downloader_type: str,
+        torrents: List[Any],
+        channel: Any = None,
+    ) -> List[str]:
+        """
+        处理单个下载器里的 BT（公开站）种子：逐种子限速 + 做种时长到点暂停。
+
+        完全独立于分享率限速流程：不走入库门禁、不走站点筛选、不看分享率。
+
+        :return: 需要并入本轮摘要的文本行
+        """
+        lines: List[str] = []
+        torrents = torrents or []
+        if not torrents:
+            return lines
+        up_kb = self._bt_upload_limit
+        dl_kb = self._bt_download_limit
+        seed_seconds = int(self._bt_seed_hours * 3600)
+        channels = self._normalize_channels(channel)
+        history_sites = self._load_history_sites([self._torrent_hash(t, downloader_type) for t in torrents])
+        site_cache: Dict[str, str] = {}
+        paused_map = self._bt_paused.setdefault(service_name, {})
+        resumed = self._bt_resumed.setdefault(service_name, set())
+        limit_map = self._bt_limits.setdefault(service_name, {})
+        bt_count = limited = paused = failed = unchanged = 0
+        for torrent in torrents:
+            torrent_hash = self._torrent_hash(torrent, downloader_type)
+            if not torrent_hash or torrent_hash in resumed:
+                continue
+            if self._bt_excluded(torrent, downloader_type):
+                continue
+            site = self._resolve_site(torrent, torrent_hash, downloader_type, history_sites, site_cache)
+            if self._bt_classify(torrent, downloader_type, site) != "bt":
+                continue
+            bt_count += 1
+            torrent_name = self._torrent_name(torrent, downloader_type) or torrent_hash
+            # 已登记暂停、但种子又跑起来了：视为用户手动恢复，转入豁免清单不再处理
+            if torrent_hash in paused_map and not self._bt_is_stopped(torrent, downloader_type):
+                paused_map.pop(torrent_hash, None)
+                resumed.add(torrent_hash)
+                logger.info(f"{self.LOG_TAG}[{service_name}] BT 种子 [{torrent_name}] 已被手动恢复，不再自动处理")
+                continue
+            # 1) 逐种子限速：目标值与上一轮相同就跳过，避免反复调用下载器
+            if up_kb > 0 or dl_kb > 0:
+                if self._bt_limit_satisfied(service_name, torrent, downloader_type, up_kb, dl_kb):
+                    unchanged += 1
+                elif self._apply_bt_limit(service_name, downloader, torrent_hash, torrent_name, up_kb, dl_kb):
+                    limited += 1
+                    if not self._bt_dry_run:
+                        limit_map[torrent_hash] = self._bt_limit_kind(up_kb, dl_kb)
+                        # 登记待恢复：停用/卸载时把上传/下载限速一并恢复为不限速
+                        self._restore_hashes.setdefault(service_name, set()).add(torrent_hash)
+                else:
+                    failed += 1
+            # 2) 做种时长到点只暂停（不删任务、不删文件）
+            if seed_seconds > 0 and torrent_hash not in paused_map:
+                if not self._torrent_completed(torrent, downloader_type):
+                    continue
+                seeding = self._bt_seeding_seconds(torrent, downloader_type)
+                if seeding < seed_seconds:
+                    continue
+                if self._bt_is_stopped(torrent, downloader_type):
+                    # 已被别的途径暂停：只登记进清单，不重复调用
+                    if not self._bt_dry_run:
+                        paused_map[torrent_hash] = {
+                            "name": torrent_name,
+                            "hours": round(seeding / 3600, 2),
+                            "at": self._now_text(),
+                        }
+                    continue
+                if self._pause_bt_torrent(service_name, downloader, torrent_hash, torrent_name, seeding):
+                    paused += 1
+                    if not self._bt_dry_run:
+                        paused_map[torrent_hash] = {
+                            "name": torrent_name,
+                            "hours": round(seeding / 3600, 2),
+                            "at": self._now_text(),
+                        }
+                        if channels:
+                            self._send_event_notify(
+                                "bt_pause", site, torrent_name, channels, limit=round(seeding / 3600, 2)
+                            )
+        if bt_count:
+            prefix = "[试运行] " if self._bt_dry_run else ""
+            lines.append(
+                f"{service_name}：{prefix}BT 种子 {bt_count} 个，新限速 {limited} 个，"
+                f"限速已是目标值 {unchanged} 个，到点暂停 {paused} 个，失败 {failed} 个"
+            )
+        self._save_dict_map(self._BT_PAUSED_KEY, self._bt_paused)
+        self._save_dict_map(self._BT_LIMITS_KEY, self._bt_limits)
+        self._save_set_map(self._BT_RESUMED_KEY, self._bt_resumed)
+        return lines
+
+    def _bt_page(self) -> Optional[List[dict]]:
+        """BT 分支的暂停清单页：没有暂停记录时返回 None（保持默认行为）。"""
+        rows = []
+        for service_name, items in (self._bt_paused or {}).items():
+            for torrent_hash, info in items.items():
+                if not isinstance(info, dict):
+                    continue
+                rows.append({**info, "service": service_name, "hash": torrent_hash})
+        if not rows:
+            return None
+        list_items = []
+        for row in rows:
+            hours = self._to_hours(row.get("hours"), 0.0)
+            list_items.append(
+                {
+                    "component": "VListItem",
+                    "props": {"class": "px-2"},
+                    "content": [
+                        {
+                            "component": "VListItemTitle",
+                            "text": f"[{row.get('service')}] {row.get('name') or row.get('hash')}",
+                        },
+                        {
+                            "component": "VListItemSubtitle",
+                            "text": f"做种已达 {hours:g} 小时，已暂停（{row.get('at') or '未知时间'}）",
+                        },
+                    ],
+                }
+            )
+        return [
+            {
+                "component": "div",
+                "text": "BT 站点种子：做种时长到点已暂停（可调用插件接口 /resume_bt 一键恢复）",
+                "props": {"class": "text-caption"},
+            },
+            {
+                "component": "VCard",
+                "props": {"class": "mt-2"},
+                "content": [
+                    {"component": "VCardTitle", "props": {"class": "text-subtitle-1"}, "text": "已暂停的 BT 种子"},
+                    {"component": "VList", "props": {"density": "compact"}, "content": list_items},
+                ],
+            },
+        ]
+
+    def api_resume_bt(self, downloader: Optional[str] = None, hash: Optional[str] = None) -> Dict[str, Any]:
+        """
+        恢复被 BT 分支暂停的种子（不传参数时恢复全部），恢复后进入豁免清单。
+
+        :param downloader: 只恢复指定下载器
+        :param hash: 只恢复指定种子
+        """
+        targets: Dict[str, List[str]] = {}
+        for service_name, items in (self._bt_paused or {}).items():
+            if downloader and service_name != downloader:
+                continue
+            for torrent_hash in list(items.keys()):
+                if hash and torrent_hash != hash:
+                    continue
+                targets.setdefault(service_name, []).append(torrent_hash)
+        if not targets:
+            return {"success": False, "message": "没有需要恢复的 BT 种子"}
+        services = self._get_services(list(targets.keys())) or {}
+        resumed_count = 0
+        failed: List[str] = []
+        for service_name, hashes in targets.items():
+            service_info = services.get(service_name)
+            if not service_info:
+                failed.extend(hashes)
+                continue
+            for torrent_hash in hashes:
+                try:
+                    if not service_info.instance.start_torrents(ids=torrent_hash):
+                        failed.append(torrent_hash)
+                        logger.error(f"{self.LOG_TAG}[{service_name}] 恢复 BT 种子 [{torrent_hash}] 失败：下载器返回失败")
+                        continue
+                    self._bt_paused.get(service_name, {}).pop(torrent_hash, None)
+                    self._bt_resumed.setdefault(service_name, set()).add(torrent_hash)
+                    resumed_count += 1
+                    logger.info(f"{self.LOG_TAG}[{service_name}] BT 种子 [{torrent_hash}] 已恢复，后续不再自动暂停")
+                except Exception as err:
+                    failed.append(torrent_hash)
+                    logger.error(f"{self.LOG_TAG}[{service_name}] 恢复 BT 种子 [{torrent_hash}] 失败：{err}")
+        self._save_dict_map(self._BT_PAUSED_KEY, self._bt_paused)
+        self._save_set_map(self._BT_RESUMED_KEY, self._bt_resumed)
+        return {"success": not failed, "resumed": resumed_count, "failed": failed}
+
+    def _resume_bt_paused(self) -> None:
+        """
+        停用/卸载插件时把 BT 分支暂停过的种子恢复做种。
+
+        与 api_resume_bt 的区别：不写入豁免清单，只清空暂停记录——
+        插件停用后不应留下自己造成的暂停状态。
+        """
+        paused = self._bt_paused or {}
+        if not paused:
+            return
+        services = self._get_services(list(paused.keys())) or {}
+        for service_name, items in list(paused.items()):
+            service_info = services.get(service_name)
+            if not service_info:
+                continue
+            for torrent_hash in list(items.keys()):
+                try:
+                    if not service_info.instance.start_torrents(ids=torrent_hash):
+                        logger.error(
+                            f"{self.LOG_TAG}[{service_name}] 停用时恢复 BT 种子 [{torrent_hash}] 失败：下载器返回失败"
+                        )
+                        continue
+                    items.pop(torrent_hash, None)
+                    logger.info(f"{self.LOG_TAG}[{service_name}] 插件停用，已恢复 BT 种子 [{torrent_hash}] 做种")
+                except Exception as err:
+                    logger.error(f"{self.LOG_TAG}[{service_name}] 停用时恢复 BT 种子 [{torrent_hash}] 失败：{err}")
+            if not items:
+                self._bt_paused.pop(service_name, None)
+        self._save_dict_map(self._BT_PAUSED_KEY, self._bt_paused)
+
     # ---------------------------------------------------------------- 站点识别
     def _load_site_domains(self) -> Dict[str, str]:
         """
@@ -2436,6 +3168,10 @@ class QbUploadLimiter(_PluginBase):
             text, title = f"AI已接管{subject}，当前限速**{limit:g}** KB/s", "【QB上传限速】AI接管"
         elif event == "ai_release":
             text, title = f"AI已取消接管{subject}，已恢复不限速", "【QB上传限速】AI取消接管"
+        elif event == "bt_limit":
+            text, title = f"{subject}已按 BT 规则限速**{limit:g}** KB/s", "【QB上传限速】BT种子"
+        elif event == "bt_pause":
+            text, title = f"{subject}做种已达**{limit:g}**小时，已暂停做种", "【QB上传限速】BT种子"
         else:
             return False
         if reason:
@@ -2574,12 +3310,18 @@ class QbUploadLimiter(_PluginBase):
             downloader = service_info.instance
             hashes = self._restore_hashes.get(service_name) or set()
             failed_hashes = set()
+            bt_kinds = self._bt_limits.get(service_name) or {}
             for torrent_hash in hashes:
                 try:
-                    if not downloader.change_torrent(hash_string=torrent_hash, upload_limit=0):
+                    restore_kwargs: Dict[str, Any] = {"upload_limit": 0}
+                    # BT 分支给种子设过下载限速的，一并恢复为不限速
+                    if "dl" in str(bt_kinds.get(torrent_hash) or ""):
+                        restore_kwargs["download_limit"] = 0
+                    if not downloader.change_torrent(hash_string=torrent_hash, **restore_kwargs):
                         failed_hashes.add(torrent_hash)
                         logger.error(f"{self.LOG_TAG}[{service_name}] 恢复种子 [{torrent_hash}] 上传限速失败：下载器返回失败")
                         continue
+                    bt_kinds.pop(torrent_hash, None)
                     logger.info(f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_hash}] 已恢复不限速")
                 except Exception as err:
                     failed_hashes.add(torrent_hash)
@@ -2590,6 +3332,12 @@ class QbUploadLimiter(_PluginBase):
             else:
                 self._restore_hashes.pop(service_name, None)
             self._limited_hashes[service_name] = set()
+            if bt_kinds:
+                self._bt_limits[service_name] = bt_kinds
+            else:
+                self._bt_limits.pop(service_name, None)
+        # BT 分支的限速归属记录随恢复流程一并落盘
+        self._save_dict_map(self._BT_LIMITS_KEY, self._bt_limits)
 
     def _start_scheduler(self):
         """启动后台调度器（存在任务时）。"""
@@ -2686,12 +3434,16 @@ class QbUploadLimiter(_PluginBase):
         """
         启用状态下兜底重试恢复失败的种子，将其恢复为不限速。
 
-        仅处理待恢复集合中未被本插件继续限速的种子，
+        仅处理待恢复集合中未被本插件继续限速的种子（分享率限速与 BT 分支都算），
         避免与正在限速的种子冲突；下载器短暂离线导致的恢复失败，
         在下载器恢复后由每轮检测顺带重试，无需等待停用/卸载。
         """
-        pending = set(self._restore_hashes.get(service_name) or set()) - set(
-            self._limited_hashes.get(service_name) or set()
+        pending = (
+            set(self._restore_hashes.get(service_name) or set())
+            - set(self._limited_hashes.get(service_name) or set())
+            # BT 分支正在限速的种子同样要排除：它们归 _bt_limits 管理，
+            # 由 _restore_limits 在停用/卸载时连同下载限速一起恢复
+            - set((self._bt_limits.get(service_name) or {}).keys())
         )
         if not pending:
             return
@@ -2852,6 +3604,75 @@ class QbUploadLimiter(_PluginBase):
         if number <= 0:
             return default
         return number
+
+    @staticmethod
+    def _to_hours(value: Any, default: float = 0.0) -> float:
+        """
+        安全转换做种时长（小时）为非负浮点数，允许小数。
+
+        :param value: 待转换值（可为数字或字符串）
+        :param default: 转换失败时的默认值
+        """
+        if value is None or isinstance(value, bool):
+            return default
+        try:
+            hours = float(str(value).strip())
+        except (TypeError, ValueError):
+            return default
+        if hours != hours:  # NaN
+            return default
+        return max(round(hours, 2), 0.0)
+
+    @staticmethod
+    def _split_words(value: Any) -> List[str]:
+        """把逗号/分号/换行分隔的文本拆成去重列表（兼容列表配置）。"""
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            raw = [str(item) for item in value]
+        else:
+            text = str(value)
+            for sep in (",", "，", ";", "；", chr(10), chr(13)):
+                text = text.replace(sep, chr(10))
+            raw = text.split(chr(10))
+        items: List[str] = []
+        for item in raw:
+            item = str(item or "").strip()
+            if item and item not in items:
+                items.append(item)
+        return items
+
+    def _load_dict_map(self, key: str) -> Dict[str, Dict[str, Any]]:
+        """读取 {下载器名称: {种子Hash: 任意值}} 形式的持久化记录。"""
+        try:
+            raw = self.get_data(key) or {}
+        except Exception as err:
+            logger.error(f"{self.LOG_TAG}读取持久化数据 {key} 失败：{err}")
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        result: Dict[str, Dict[str, Any]] = {}
+        for service, items in raw.items():
+            if service and isinstance(items, dict) and items:
+                result[str(service)] = {str(k): v for k, v in items.items() if k}
+        return result
+
+    def _save_dict_map(self, key: str, mapping: Dict[str, Dict[str, Any]]):
+        """持久化 {下载器名称: {种子Hash: 任意值}} 记录（空项不落盘）。"""
+        try:
+            payload = {
+                service: {str(k): v for k, v in items.items() if k}
+                for service, items in mapping.items()
+                if service and items
+            }
+            self.save_data(key, payload)
+        except Exception as err:
+            logger.error(f"{self.LOG_TAG}持久化数据 {key} 失败：{err}")
+
+    @staticmethod
+    def _now_text() -> str:
+        """当前时间文本（宿主时区），用于记录暂停时间。"""
+        return datetime.datetime.now(tz=pytz.timezone(settings.TZ)).strftime("%Y-%m-%d %H:%M:%S")
 
     @staticmethod
     def _format_limit(limit: float) -> str:
