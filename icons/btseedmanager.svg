@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="BT种子管家">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#17463a"/>
+      <stop offset="1" stop-color="#07130f"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#2fbf7f"/>
+      <stop offset="1" stop-color="#6ef0b0"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <path d="M112 204 L112 118" stroke="#3ddc97" stroke-width="15" stroke-linecap="round" fill="none"/>
+  <path d="M112 152 C80 152 58 130 58 96 C92 96 112 116 112 152 Z" fill="#5aa9ff"/>
+  <path d="M112 130 C146 130 168 108 168 74 C134 74 112 94 112 130 Z" fill="url(#leaf)"/>
+  <circle cx="190" cy="188" r="42" fill="#f97316"/>
+  <rect x="176" y="170" width="10" height="36" rx="5" fill="#0b1526"/>
+  <rect x="194" y="170" width="10" height="36" rx="5" fill="#0b1526"/>
+</svg>

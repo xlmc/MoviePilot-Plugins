@@ -12,6 +12,7 @@
 | <img src="icons/playbackbestversion.svg" width="26" align="top"/> **[播放进度洗版](#播放进度洗版-playbackbestversion)** | v2.2.0 | v3.2.0 | 按分集播放进度决定是否继续洗版 |
 | <img src="icons/watchedcleaner.svg" width="26" align="top"/> **[看完即删](#看完即删-watchedcleaner)** | v2.2.0 | v3.2.0 | 看完的集自动清理，且不会被重新下载 |
 | <img src="icons/washtwice.svg" width="26" align="top"/> **[洗版两次](#洗版两次-washtwice)** | v2.4.0 | v3.4.0 | 首发最低档，第二次升到规则组首层（最高档） |
+| <img src="icons/btseedmanager.svg" width="26" align="top"/> **[BT种子管家](#bt种子管家-btseedmanager)** | v2.0.0 | v3.0.0 | 只对 BT 站点种子单独限速、做种到点只暂停，PT 一律不动 |
 
 ## 安装
 
@@ -151,6 +152,20 @@ MoviePilot 入库完成后自动将源文件上传到 EMOS（Emby 资源站上�
 - 试运行模式（默认开启）：只记日志不改候选、不写库
 
 详细功能与配置说明见 [plugins.v2/washtwice/README.md](plugins.v2/washtwice/README.md)（V2）与 [plugins.v3/washtwice/README.md](plugins.v3/washtwice/README.md)（V3）。
+
+## BT种子管家 BtSeedManager
+
+PT 站有分享率考核，做种要久、速度要给；BT 站（公开站）反过来，长期挂着只是白占上传带宽和队列。而下载器的限速是**全局**的，为 BT 限速会连 PT 一起限掉。本插件用下载器的**单种子接口**逐种子处理，只挑 BT 站点来的种子。
+
+主要特性：
+
+- **只动 BT**：下载历史里的站点名命中「站点管理」中 `public = 1` 的站点即判为 BT；命中 PT 站点直接跳过；没有下载历史时看 tracker 域名，属于 PT 站点域名（含子域）即豁免，其余（公开 tracker、纯 DHT）按 BT 处理；可额外补 BT / PT 白名单
+- **每种子限速**：对 BT 种子调用 `change_torrent` 设置上传 / 下载限速（KB/s），只写在该种子上，**不修改下载器全局限速**；目标值与上一轮相同就跳过，不反复调用
+- **做种时长到点只暂停**：只处理已下载完成（进度 100%）的种子，做种秒数达到上限后调用 `stop_torrents` 暂停，**不删任务、不删文件**；已暂停的记入清单，可一键恢复（恢复后进入豁免清单，不再自动暂停）
+- **PT 保护**：判定为 PT 的种子一个接口都不调用；也可用「排除标签」把某些种子整体排除
+- 支持试运行（只打印不执行）、详情页暂停清单、通知，以及 `/run`、`/status`、`/resume`、`/reset` 接口
+
+详细功能与配置说明见 [plugins.v2/btseedmanager/README.md](plugins.v2/btseedmanager/README.md)（V2）与 [plugins.v3/btseedmanager/README.md](plugins.v3/btseedmanager/README.md)（V3）。
 
 ## 许可
 

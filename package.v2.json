@@ -140,5 +140,19 @@
       "v2.1.0": "新增合并迁移提示：本插件已并入「洗版管家」，升级后首次加载会发一条通知提醒迁移（只发一次）。本插件保持可用，但不再更新。",
       "v2.0.0": "首个版本：按 Emby / Jellyfin 的分集播放进度清理看完的内容——先改订阅再删文件，避免宿主把已删的集判成缺失而重复下载；电视剧从开始集数起连续看完的一段前移 start_episode，洗版订阅额外写 episode_priority=100 并重算 current_priority，电影在洗版订阅下写 current_priority=100；删除链路依次为媒体服务器条目、媒体库文件、下载目录源文件（可选）、同名刮削文件、空目录（最多向上 3 层）、整理记录；支持进度阈值 / 播过即算 / 标记已看三种判定、延迟清理、多服务器多用户合并、试运行与通知。功能与 V3 版本 v3.0.0 一致，导入路径为 app.core.config / app.helper / app.plugins / app.log / app.utils.http / app.db.subscribe_oper / app.db.transferhistory_oper。"
     }
+  },
+  "BtSeedManager": {
+    "v3": false,
+    "name": "BT种子管家",
+    "description": "只对 BT 站点（公开站）种子单独限速、限制做种时长，PT 种子一律不动，也不修改下载器全局设置。做种时长到点只暂停任务，不删任务不删文件；BT/PT 按站点 public 标记与 tracker 域名判定，可补白名单；支持试运行、状态查看与一键恢复。",
+    "labels": "BT,PT,限速,做种,下载器",
+    "version": "2.0.0",
+    "icon": "https://raw.githubusercontent.com/xlmc/MoviePilot-Plugins/main/icons/btseedmanager.svg",
+    "author": "xlmc",
+    "project_url": "https://github.com/xlmc/MoviePilot-Plugins",
+    "level": 1,
+    "history": {
+      "v2.0.0": "首个版本：功能与 V3 版本 v3.0.0 一致，导入路径为 app.plugins / app.log / app.helper.downloader / app.db.site_oper / app.db.downloadhistory_oper。"
+    }
   }
 }
