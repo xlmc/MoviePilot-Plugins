@@ -45,7 +45,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "2.1.2"
+    plugin_version = "2.1.3"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     project_url = "https://github.com/xlmc/MoviePilot-Plugins"
@@ -179,6 +179,10 @@ class QbUploadLimiter(_PluginBase):
         """
         was_enabled = self._enabled
         old_downloaders = self._downloaders or []
+        # 限速相关配置指纹：重新初始化（保存配置、重载插件）时判断是否需要先恢复
+        # 旧限速再按新配置重算。只有通知渠道、检测间隔等无关项变化时不做恢复，
+        # 避免每保存一次配置就把所有已限速种子「恢复→重新限速」抖动一遍
+        old_limit_signature = self._limit_signature()
         self._stop_scheduler()
 
         config = config or {}
@@ -206,6 +210,8 @@ class QbUploadLimiter(_PluginBase):
         # 站点映射（域名 -> 名称、名称小写 -> 名称）只构建一次，供本轮所有种子复用
         self._site_domains = self._load_site_domains()
         self._site_names = {name.lower(): name for name in self._site_domains.values() if name}
+        # 影响限速结果的配置是否变化（限速值、站点筛选、分享率阈值、下载器、AI 设置）
+        limit_config_changed = self._limit_signature() != old_limit_signature
 
         # 规范化持久化：修正历史遗留的非法配置（如分享率阈值 0、字符串数字等），
         # 避免非法值回显到表单或影响后续逻辑
@@ -229,15 +235,22 @@ class QbUploadLimiter(_PluginBase):
         self._restore_hashes = self._load_set_map(self._RESTORE_DATA_KEY)
         self._notified_hashes = self._load_set_map(self._NOTIFIED_DATA_KEY)
 
-        # 停用插件或启用状态下修改配置时，先恢复旧配置下已限速的种子为不限速，
-        # 避免清空记录后旧限速丢失归属、停用/卸载时无法恢复
-        if was_enabled:
+        # 停用插件、或启用状态下改动了影响限速结果的配置时，先恢复旧配置下已限速
+        # 的种子为不限速，避免清空记录后旧限速丢失归属、停用/卸载时无法恢复
+        restore_needed = was_enabled and (not self._enabled or limit_config_changed)
+        if restore_needed:
             self._restore_limits(downloaders=old_downloaders)
 
-        # 每次重新初始化时仅清空本次会话的限速/计时记录；
-        # 待恢复记录保留（恢复失败的仍可重试）
-        self._limited_hashes = {}
-        self._limited_times = {}
+        if was_enabled and self._enabled and not limit_config_changed:
+            # 限速相关配置没变（只是保存了通知渠道、检测间隔等无关项）：保留本次会话的
+            # 限速归属与计时记录，避免已限速种子被「恢复→重新限速」抖动一遍
+            # （限速会短暂失效，下载器调用与日志也会被刷屏）
+            logger.info(f"{self.LOG_TAG}限速相关配置未变更，保留现有限速状态")
+        else:
+            # 每次重新初始化时仅清空本次会话的限速/计时记录；
+            # 待恢复记录保留（恢复失败的仍可重试）
+            self._limited_hashes = {}
+            self._limited_times = {}
         # 种子状态机、AI 决策缓存与上传量快照为会话级数据，重新初始化时清空，
         # 快照丢失后首轮只建快照、次轮起窗口增量判断生效，种子状态自动重新归位
         self._seed_states = {}
@@ -291,6 +304,26 @@ class QbUploadLimiter(_PluginBase):
         # 恢复失败，在下载器重连后自动恢复不限速，无需重新启用插件
         if not self._enabled:
             self._start_restore_retry()
+
+    def _limit_signature(self) -> tuple:
+        """
+        返回影响限速结果的配置指纹。
+
+        重新初始化时用它判断「这次保存/重载是否真的改了限速相关配置」：
+        只有指纹变化（或插件被停用）才需要把已限速种子恢复为不限速再按新配置
+        重算；指纹没变时保留现有限速，避免无谓的恢复与重新限速。
+        """
+        return (
+            self._upload_limit,
+            self._upload_bandwidth,
+            self._share_ratio,
+            self._site_share_ratios_text,
+            tuple(self._downloaders or []),
+            tuple(self._sites or []),
+            bool(self._ai_enabled),
+            self._ai_eval_interval,
+            self._ai_site_ratio_threshold,
+        )
 
     def stop_service(self):
         """
