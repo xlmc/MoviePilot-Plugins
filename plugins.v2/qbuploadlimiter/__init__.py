@@ -45,7 +45,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "2.1.1"
+    plugin_version = "2.1.2"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     project_url = "https://github.com/xlmc/MoviePilot-Plugins"
@@ -1270,11 +1270,12 @@ class QbUploadLimiter(_PluginBase):
                         f"{self.LOG_TAG}[{service_name}] 种子 [{torrent_name}] 分享率达到 {torrent_threshold:g}，"
                         f"已限速 {self._format_limit(torrent_limit)}"
                     )
-                # 通知：仅在该种子首次被本插件限速时发送（AI 接管或常规限速）。
-                # 除本轮的归属判断外还要查持久化的「已通知」记录：保存配置或更新插件
-                # 会重入 init_plugin 并清空归属记录，只靠 owned 会把每颗种子重新通知一遍
+                # 通知：该种子首次被本插件限速时发送一次（AI 接管或常规限速）。
+                # 只按持久化的「已通知」记录去重，不看本轮归属判断（owned）：
+                # 跨会话的待恢复记录会让 owned 恒为真，导致首次限速被静默、
+                # 通知要等某次恢复后再限速才补发，时间点会漂到几小时甚至一天后。
                 notified = self._notified_hashes.setdefault(service_name, set())
-                if channels and not owned and torrent_hash not in notified:
+                if channels and torrent_hash not in notified:
                     notified.add(torrent_hash)
                     site = site_cache.get(torrent_hash, "") or self._torrent_site(torrent, downloader_type)
                     if ai_limits and torrent_hash in ai_limits:
