@@ -6,7 +6,7 @@
 
 | 插件 | V2 版本 | V3 版本 | 简介 |
 | --- | --- | --- | --- |
-| <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v2.1.1 | v3.2.1 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速与按站点筛选；公开站（BT）种子单独识别 |
+| <img src="icons/Qbittorrent_A.png" width="26" align="top"/> **[QB上传限速](#qb上传限速-qbuploadlimiter)** | v2.2.0 | v3.3.0 | 种子分享率达到阈值后自动限制上传速度，支持 AI 智能限速与按站点筛选；公开站（BT）种子单独识别 |
 | <img src="icons/clean.png" width="26" align="top"/> **[源文件联动清理](#源文件联动清理-scrapefileclean)** | v1.0.7（官方仓库） | v2.1.0 | 手动删除源文件后，自动联动清理硬链接、刮削文件、转移记录与媒体服务器条目 |
 | <img src="icons/Emos_A.svg" width="26" align="top"/> **[EMOS上传](#emos上传-emosupload)** | v2.1.0 | v3.0.0 | MoviePilot 下载完成后自动上传源文件到 EMOS 资源站 |
 | <img src="icons/playbackbestversion.svg" width="26" align="top"/> **[播放进度洗版](#播放进度洗版-playbackbestversion)** | v2.2.0 | v3.2.0 | 按分集播放进度决定是否继续洗版 |
@@ -64,10 +64,10 @@ V3 宿主（MoviePilot >= 3.0.0）读取 package.v3.json 与 plugins.v3/；V2 �
 - 停用/卸载自动恢复不限速；下载器离线时自动兜底重试
 - 状态变化通知（限速 / AI 接管 / AI 取消接管），支持多选通知渠道；同一颗种子的首次限速通知只发送一次（持久化记录，保存配置、更新插件、重启都不会重复推送）
 - **AI 智能限速**（可选）：复用 MoviePilot 系统设置里的大模型，按种子分享率、上传活跃度与站点账号分享率逐种子决策限速值；限速值收敛到「该种子实测上传能力砍 2~8 成」的区间并叠加合规下限，上限再与 qB 全局限速、线路实测带宽取小，支持每轮复核加限 / 减限 / 解限；大模型未配置或调用失败时自动回退阈值规则
-- AI 生效后点击插件卡片可进入种子状态详情页（状态统计 + 每种子明细）
+- 点击插件卡片进入详情页（不再需要启用 AI）：展示最近检测时间、最近一次检测结果、每个下载器的种子数 / 已入库数 / 达标数 / 已限速数、站点识别分布与已限速种子明细；AI 生效时额外展示种子状态统计
 - **公开站（BT）种子识别**：公开站种子只带公开 tracker（anidex、acg.rip、nyaa 等），域名不属于任何已登记站点，插件统一识别为「公开站（BT）」；在「站点」里勾选它即可只对 BT 种子限速，PT 种子一个接口都不调用，也不修改下载器全局设置
-- 站点识别顺序：下载历史站点记录 → tracker 域名（含子域）→ 标签 / 分类站点名 → 有 tracker 但都不属于已登记站点的归入「公开站（BT）」；没有任何 tracker 的种子视为无法识别
-- 启用站点筛选后，运行结果输出站点识别统计（如「MiKan 2、公开站（BT）5、未识别 1」），便于确认 BT / PT 归属
+- 站点识别顺序：下载历史站点记录 → tracker 域名（含子域）→ 标签 / 分类站点名；都不命中时（公开 tracker、DHT/PeX 占位 tracker、完全没有 tracker 的磁力种子）一律归入「公开站（BT）」，不会被站点筛选丢弃；站点管理里 public = 1 的公开站（Nyaa、动漫花园、MiKan 等）在下载历史里的真实站名同样归一为「公开站（BT）」，站点筛选双向兼容
+- 每轮检测输出一行「检测完成」摘要日志与站点识别统计（如「MiKan 2、公开站（BT）5」），不再出现插件静默、无法确认是否取到种子的情况；获取种子列表失败且下载器已断开时先本地重连再重试一次
 
 详细功能与配置说明见 [plugins.v2/qbuploadlimiter/README.md](plugins.v2/qbuploadlimiter/README.md)（V2）与 [plugins.v3/qbuploadlimiter/README.md](plugins.v3/qbuploadlimiter/README.md)（V3）。
 

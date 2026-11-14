@@ -45,7 +45,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "2.1.3"
+    plugin_version = "2.2.0"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     project_url = "https://github.com/xlmc/MoviePilot-Plugins"
@@ -83,9 +83,16 @@ class QbUploadLimiter(_PluginBase):
     _site_domains: Dict[str, str] = {}
     # 站点名称(小写) -> 原始名称，用于标签/分类匹配
     _site_names: Dict[str, str] = {}
-
+    # 公开站（站点配置 public=1，如 Nyaa/动漫花园/MiKan）名称(小写)集合：
+    # 这些站点的种子与「公开站（BT）」等价处理，避免按站名分散成互不匹配的站点
+    _public_sites: Set[str] = set()
     _scheduler = None
     _last_result = None
+    # 最近一次检测结果快照：{下载器名称: {种子数/已入库/达标/已限速/站点分布/已限速明细}}，
+    # 供详情页展示；此前检测结果只写不读，用户看不到插件到底取到了什么种子
+    _run_stats: Dict[str, Dict[str, Any]] = {}
+    # 最近一次检测完成时间（本地时间字符串），用于确认定时任务是否在跑
+    _last_run_at: str = ""
     # 停用/卸载后兜底恢复重试的调度器与已重试次数：恢复失败项在下载器重连后自动重试
     _retry_scheduler = None
     _retry_attempts = 0
@@ -262,6 +269,9 @@ class QbUploadLimiter(_PluginBase):
         self._ai_config_missing = False
         self._ai_config_retry_at = 0.0
         self._seed_page_snapshot = {}
+        # 详情页检测快照为会话级数据，重新初始化后清空，等待下一轮检测重新填充
+        self._run_stats = {}
+        self._last_run_at = ""
         # 重新初始化后 AI 生效标记与决策缓存一并清零：详情页显隐跟随新一轮
         # 大模型调用结果重新判定，避免保存配置后出现「有页面无数据」或残留旧标记
         self._ai_active = False
@@ -364,105 +374,194 @@ class QbUploadLimiter(_PluginBase):
 
     def get_page(self) -> Optional[List[dict]]:
         """
-        种子状态详情页（彩蛋）：仅当 AI 智能限速已成功生效（至少一次大模型调用
-        并解析成功）时返回状态页面，点击插件卡片进入该页查看每个种子的状态；
-        未成功开启 AI 时返回 None，保持点击卡片直接进入插件设置的原有行为。
+        检测详情页：展示最近一次检测取到的种子数量、站点识别分布与已限速种子。
+
+        页面始终可用（不再依赖 AI 是否生效）：此前未启用 AI 时返回 None，用户完全
+        看不到插件是否取到了种子、BT/PT 站点归属是否符合预期。
+        AI 智能限速生效时额外展示种子状态分布。
         """
-        # AI 未启用或未成功生效：无详情页，点击卡片直接进设置
-        if not self._ai_enabled or not self._ai_active:
-            return None
-        # 汇总各下载器的种子状态快照
-        rows: List[dict] = []
-        for service_name, snapshot in self._seed_page_snapshot.items():
-            for info in snapshot.values():
-                rows.append({**info, "service": service_name})
-        if not rows:
-            return [
+        cards: List[dict] = []
+        state_text = "已启用" if self._enabled else "已停用"
+        cards.append(
+            {
+                "component": "VCard",
+                "props": {"class": "mb-2"},
+                "content": [
+                    {"component": "VCardTitle", "props": {"class": "text-subtitle-1"}, "text": "运行状态"},
+                    {
+                        "component": "VCardText",
+                        "props": {"class": "py-1"},
+                        "text": f"{state_text}｜最近检测：{self._last_run_at or '尚未检测'}",
+                    },
+                    {
+                        "component": "VCardText",
+                        "props": {"class": "py-1 text-caption"},
+                        "text": (
+                            f"分享率阈值 {self._share_ratio:g}｜上传限速 {self._format_limit(self._upload_limit)}"
+                            f"｜检测间隔 {self._interval_seconds} 秒"
+                        ),
+                    },
+                    {
+                        "component": "VCardText",
+                        "props": {"class": "py-1 text-caption"},
+                        "text": (
+                            f"下载器：{'、'.join(self._downloaders) if self._downloaders else '未选择'}"
+                            f"｜站点筛选：{'、'.join(self._sites) if self._sites else '全部站点'}"
+                        ),
+                    },
+                ],
+            }
+        )
+        # 最近一次检测结果：含「未入库忽略」「获取种子列表失败」等排查信息
+        if self._last_result:
+            cards.append(
                 {
-                    "component": "div",
-                    "text": "AI 智能限速已生效，暂无已入库种子数据（等待下轮检测）",
-                    "props": {"class": "text-center"},
-                }
-            ]
-        # 状态排序：限速中 > 待评估 > 恢复中 > AI 不限速 > 忽略
-        order = {"limited": 0, "pending": 1, "recovering": 2, "no_limit": 3, "idle": 4}
-        rows.sort(key=lambda r: (order.get(r.get("state"), 9), r.get("service", "")))
-        # 顶部状态统计卡片
-        counts: Dict[str, int] = {}
-        for row in rows:
-            label = self._STATE_LABELS.get(row.get("state"), row.get("state"))
-            counts[label] = counts.get(label, 0) + 1
-        header_cards = []
-        for label in ("待评估", "限速中", "恢复中", "AI 不限速", "忽略"):
-            header_cards.append(
-                {
-                    "component": "VCol",
-                    "props": {"cols": 6, "md": 3},
+                    "component": "VCard",
+                    "props": {"class": "mb-2"},
                     "content": [
                         {
-                            "component": "VCard",
-                            "props": {"class": "text-center"},
-                            "content": [
-                                {
-                                    "component": "VCardText",
-                                    "props": {"class": "pa-2 text-h6"},
-                                    "text": str(counts.get(label, 0)),
-                                },
-                                {
-                                    "component": "VCardText",
-                                    "props": {"class": "pa-2 pt-0 text-caption"},
-                                    "text": label,
-                                },
-                            ],
+                            "component": "VCardTitle",
+                            "props": {"class": "text-subtitle-1"},
+                            "text": "最近一次检测结果",
+                        },
+                        {
+                            "component": "VCardText",
+                            "props": {"class": "py-1 text-caption", "style": "white-space: pre-wrap;"},
+                            "text": str(self._last_result),
+                        },
+                    ],
+                }
+            )
+        if not self._run_stats:
+            cards.append(
+                {
+                    "component": "VCard",
+                    "props": {"class": "mb-2"},
+                    "content": [
+                        {
+                            "component": "VCardText",
+                            "props": {"class": "text-center text-caption"},
+                            "text": "暂无检测数据：等待下一轮检测，或检查下载器是否已选择并连接",
                         }
                     ],
                 }
             )
-        # 种子状态列表
-        list_items = []
-        for row in rows:
-            state = row.get("state")
-            label = self._STATE_LABELS.get(state, state)
-            limit_kb = int(row.get("limit_kb") or 0)
-            limit_text = f"，限速 {limit_kb} KB/s" if state == "limited" and limit_kb > 0 else ""
-            site = str(row.get("site") or "").strip()
-            site_text = f"（{site}）" if site else ""
-            reason = str(row.get("reason") or "").strip()
-            reason_text = f"：{reason}" if reason else ""
-            list_items.append(
+        for service_name, stats in self._run_stats.items():
+            items: List[dict] = []
+            if stats.get("error"):
+                items.append(
+                    {
+                        "component": "VListItem",
+                        "props": {"class": "px-2"},
+                        "content": [{"component": "VListItemSubtitle", "text": str(stats.get("error"))}],
+                    }
+                )
+            else:
+                items.append(
+                    {
+                        "component": "VListItem",
+                        "props": {"class": "px-2"},
+                        "content": [
+                            {
+                                "component": "VListItemTitle",
+                                "text": (
+                                    f"种子 {stats.get('total', 0)} 个｜已入库 {stats.get('eligible', 0)} 个"
+                                    f"｜达标 {stats.get('matched', 0)} 个｜已限速 {stats.get('limited_total', 0)} 个"
+                                ),
+                            },
+                            {
+                                "component": "VListItemSubtitle",
+                                "text": (
+                                    f"本轮新限速 {stats.get('new_limited', 0)} 个、已满足 {stats.get('already', 0)} 个、"
+                                    f"失败 {stats.get('failed', 0)} 个、未入库忽略 {stats.get('ignored', 0)} 个"
+                                ),
+                            },
+                        ],
+                    }
+                )
+                sites = stats.get("sites") or {}
+                if sites:
+                    detail = "、".join(
+                        f"{name} {count}"
+                        for name, count in sorted(sites.items(), key=lambda kv: (-kv[1], kv[0]))
+                    )
+                    items.append(
+                        {
+                            "component": "VListItem",
+                            "props": {"class": "px-2"},
+                            "content": [
+                                {"component": "VListItemTitle", "text": "站点识别"},
+                                {"component": "VListItemSubtitle", "text": detail},
+                            ],
+                        }
+                    )
+                limited_items = stats.get("limited_items") or []
+                if limited_items:
+                    items.append(
+                        {
+                            "component": "VListItem",
+                            "props": {"class": "px-2"},
+                            "content": [{"component": "VListItemTitle", "text": "已限速种子"}],
+                        }
+                    )
+                    for row in limited_items:
+                        site = str(row.get("site") or "").strip()
+                        site_text = f"（{site}）" if site else ""
+                        items.append(
+                            {
+                                "component": "VListItem",
+                                "props": {"class": "px-2"},
+                                "content": [
+                                    {
+                                        "component": "VListItemSubtitle",
+                                        "text": (
+                                            f"{row.get('name')}{site_text}"
+                                            f"｜限速 {int(row.get('limit_kb') or 0)} KB/s"
+                                        ),
+                                    }
+                                ],
+                            }
+                        )
+            cards.append(
                 {
-                    "component": "VListItem",
-                    "props": {"class": "px-2"},
+                    "component": "VCard",
+                    "props": {"class": "mb-2"},
                     "content": [
-                        {
-                            "component": "VListItemTitle",
-                            "text": f"[{row.get('service')}] {row.get('name')}{site_text}",
-                        },
-                        {
-                            "component": "VListItemSubtitle",
-                            "text": f"{label}{limit_text}{reason_text}",
-                        },
+                        {"component": "VCardTitle", "props": {"class": "text-subtitle-1"}, "text": service_name},
+                        {"component": "VList", "props": {"density": "compact"}, "content": items},
                     ],
                 }
             )
-        return [
-            {
-                "component": "VRow",
-                "content": header_cards,
-            },
-            {
-                "component": "VCard",
-                "props": {"class": "mt-2"},
-                "content": [
-                    {"component": "VCardTitle", "props": {"class": "text-subtitle-1"}, "text": "种子状态"},
+        # AI 智能限速生效时追加种子状态分布
+        if self._ai_enabled and self._ai_active and self._seed_page_snapshot:
+            state_counts: Dict[str, int] = {}
+            for snapshot in self._seed_page_snapshot.values():
+                for info in snapshot.values():
+                    label = self._STATE_LABELS.get(info.get("state"), info.get("state"))
+                    state_counts[label] = state_counts.get(label, 0) + 1
+            state_items = []
+            for label in ("待评估", "限速中", "恢复中", "AI 不限速", "忽略"):
+                state_items.append(
                     {
-                        "component": "VList",
-                        "props": {"density": "compact"},
-                        "content": list_items,
-                    },
-                ],
-            },
-        ]
+                        "component": "VListItem",
+                        "props": {"class": "px-2"},
+                        "content": [
+                            {"component": "VListItemTitle", "text": label},
+                            {"component": "VListItemSubtitle", "text": str(state_counts.get(label, 0))},
+                        ],
+                    }
+                )
+            cards.append(
+                {
+                    "component": "VCard",
+                    "props": {"class": "mb-2"},
+                    "content": [
+                        {"component": "VCardTitle", "props": {"class": "text-subtitle-1"}, "text": "AI 种子状态"},
+                        {"component": "VList", "props": {"density": "compact"}, "content": state_items},
+                    ],
+                }
+            )
+        return cards
 
     # ---------------------------------------------------------------- 设置表单
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
@@ -954,6 +1053,7 @@ class QbUploadLimiter(_PluginBase):
             self._retry_all_stuck_restores()
             self._save_set_map(self._RESTORE_DATA_KEY, self._restore_hashes)
             self._last_result = "没有可用的 qBittorrent/Transmission 下载器，未执行限速。"
+            self._last_run_at = datetime.datetime.now(tz=pytz.timezone(settings.TZ)).strftime("%Y-%m-%d %H:%M:%S")
             return False
 
         threshold = self._to_ratio(share_ratio, 1.0)
@@ -965,6 +1065,7 @@ class QbUploadLimiter(_PluginBase):
             self._retry_all_stuck_restores()
             self._save_set_map(self._RESTORE_DATA_KEY, self._restore_hashes)
             self._last_result = "上传速度为 0，分享率达到阈值后不做限速处理。"
+            self._last_run_at = datetime.datetime.now(tz=pytz.timezone(settings.TZ)).strftime("%Y-%m-%d %H:%M:%S")
             return True
         # 站点筛选集合（None 表示不过滤）
         selected = self._selected_sites()
@@ -977,19 +1078,22 @@ class QbUploadLimiter(_PluginBase):
                 f"（其他站点使用全局阈值 {threshold:g}）"
             )
         failed_names = []
+        # 本轮检测快照重建：已移除的下载器不再出现在详情页
+        self._run_stats = {}
 
         for service_name, service_info in services.items():
             downloader = service_info.instance
             downloader_type = getattr(service_info, "type", "")
             effective_limit = self._effective_upload_limit(downloader, downloader_type, limit)
             try:
-                torrents, error = downloader.get_torrents()
-                if error:
+                # 获取种子列表：宿主连接断开时 get_torrents 返回空列表与错误标志，
+                # 先本地重连再重试一次，避免最长等待宿主的十分钟巡检
+                torrents = self._fetch_torrents(service_name, downloader)
+                if torrents is None:
                     failed_names.append(service_name)
-                    logger.warning(f"{self.LOG_TAG}获取下载器 [{service_name}] 种子列表失败")
+                    self._run_stats[service_name] = {"error": "获取种子列表失败，详见插件运行日志"}
                     continue
                 # 空列表是下载器中没有任何种子的合法成功结果，不是获取失败
-                torrents = torrents or []
 
                 # 入库成功门禁：先批量查询 MP 整理入库记录，得到「已入库成功」的种子集合；
                 # 种子入库成功前对插件完全不可见（不监控、不限速），等同于插件未开启
@@ -1088,18 +1192,47 @@ class QbUploadLimiter(_PluginBase):
                 summary_lines.append(
                     f"{service_name}：达标 {len(matched)} 个，新限速 {new_limited} 个，已满足 {already} 个，失败 {failed} 个，限速无意义放行 {meaningless} 个，未入库忽略 {len(torrents) - len(eligible_torrents)} 个"
                 )
-                # 启用站点筛选时输出站点识别统计，便于确认 BT/PT 种子归属是否符合预期
-                if selected:
-                    site_counts: Dict[str, int] = {}
-                    for torrent in eligible_torrents:
-                        torrent_hash = self._torrent_hash(torrent, downloader_type)
-                        site_name = site_cache.get(torrent_hash) or "未识别"
-                        site_counts[site_name] = site_counts.get(site_name, 0) + 1
+                # 站点识别统计：每轮都统计（不再只在勾选站点时统计），
+                # 便于在详情页与运行日志确认 BT/PT 归属是否符合预期
+                site_counts: Dict[str, int] = {}
+                for torrent in eligible_torrents:
+                    torrent_hash = self._torrent_hash(torrent, downloader_type)
+                    site_name = site_cache.get(torrent_hash) or self._torrent_site(torrent, downloader_type)
+                    site_name = site_name or "未识别"
+                    site_counts[site_name] = site_counts.get(site_name, 0) + 1
+                if site_counts:
                     detail = "、".join(
                         f"{name} {count}"
                         for name, count in sorted(site_counts.items(), key=lambda kv: (-kv[1], kv[0]))
                     )
                     summary_lines.append(f"{service_name}：站点识别 {detail}")
+                # 已限速种子明细（详情页展示用，按数量截断避免页面过长）
+                limited_set = self._limited_hashes.get(service_name, set())
+                limited_items = []
+                for torrent in torrents:
+                    torrent_hash = self._torrent_hash(torrent, downloader_type)
+                    if torrent_hash not in limited_set:
+                        continue
+                    limited_items.append(
+                        {
+                            "name": self._torrent_name(torrent, downloader_type) or torrent_hash,
+                            "site": site_cache.get(torrent_hash) or "",
+                            "limit_kb": int((ai_limits or {}).get(torrent_hash) or effective_limit),
+                        }
+                    )
+                # 本轮检测快照：详情页据此展示「是否真的取到了种子、入库门禁过滤了多少」
+                self._run_stats[service_name] = {
+                    "total": len(torrents),
+                    "eligible": len(eligible_torrents),
+                    "matched": len(matched),
+                    "new_limited": new_limited,
+                    "already": already,
+                    "failed": failed,
+                    "ignored": max(len(torrents) - len(eligible_torrents), 0),
+                    "limited_total": len(limited_set),
+                    "sites": site_counts,
+                    "limited_items": limited_items[:50],
+                }
             except Exception as err:
                 failed_names.append(service_name)
                 logger.error(f"{self.LOG_TAG}处理下载器 [{service_name}] 失败：{err}")
@@ -1110,6 +1243,10 @@ class QbUploadLimiter(_PluginBase):
         if failed_names:
             summary_lines.append(f"处理失败：{'、'.join(failed_names)}")
         self._last_result = "\n".join(summary_lines) if summary_lines else "未检测到符合条件的种子。"
+        self._last_run_at = datetime.datetime.now(tz=pytz.timezone(settings.TZ)).strftime("%Y-%m-%d %H:%M:%S")
+        # 每轮检测输出一行摘要：此前正常轮次不写任何日志，用户无法确认插件是否在跑、
+        # 是否取到了种子，也看不到站点识别结果
+        logger.info(f"{self.LOG_TAG}检测完成：{self._last_result.replace(chr(10), '；')}")
         # 每次检测周期结束后立即持久化待恢复/已取消记录，避免后续保存配置时
         # 用数据存储中的旧快照覆盖本次会话的限速归属与取消状态
         self._save_set_map(self._RESTORE_DATA_KEY, self._restore_hashes)
@@ -1155,9 +1292,8 @@ class QbUploadLimiter(_PluginBase):
             if need_site:
                 site = self._resolve_site(torrent, torrent_hash, downloader_type, history_sites, site_cache)
             # 站点筛选：无法识别或不属于勾选列表时跳过
-            if selected and (not site or site.lower() not in selected):
+            if not self._site_selected(site, selected):
                 continue
-
             # AI 智能限速模式：limit 决策限速、no_limit 尊重不限速、
             # 已限速种子未要求调整时维持现状、无决策回退阈值规则兜底，避免「漏管」
             if ai_mode:
@@ -2007,8 +2143,12 @@ class QbUploadLimiter(_PluginBase):
     def _load_site_domains(self) -> Dict[str, str]:
         """
         构建 站点域名(小写) -> 站点名称 映射，用于识别种子所属站点。
+
+        同时记录站点配置里标记为公开站（public=1）的站点名称：这类站点的种子
+        与「公开站（BT）」等价处理，避免同一个 BT 种子按站名散落成多个站点。
         """
         domains = {}
+        public_sites: Set[str] = set()
         try:
             from app.helper.sites import SitesHelper
             for site in SitesHelper().get_indexers() or []:
@@ -2017,6 +2157,8 @@ class QbUploadLimiter(_PluginBase):
                 name = str(site.get("name") or "").strip()
                 if not name:
                     continue
+                if site.get("public"):
+                    public_sites.add(name.lower())
                 domain = str(site.get("domain") or "").strip().lower()
                 if domain:
                     domains[domain] = name
@@ -2027,6 +2169,7 @@ class QbUploadLimiter(_PluginBase):
                         domains[url_domain] = name
         except Exception as err:
             logger.warning(f"{self.LOG_TAG}读取站点配置失败：{err}")
+        self._public_sites = public_sites
         return domains
 
     @staticmethod
@@ -2098,11 +2241,14 @@ class QbUploadLimiter(_PluginBase):
         识别种子所属站点（带缓存）。
 
         优先级：下载历史记录 -> tracker 域名 -> 标签 -> 分类。
-        同一轮检测中每个种子只识别一次，结果写入 site_cache 复用。
+        下载历史里记录的公开站站名（Nyaa/MiKan 等）先归一到「公开站（BT）」，
+        否则勾选公开站时这些种子会因站名不匹配被整体跳过。
         """
         if torrent_hash in site_cache:
             return site_cache[torrent_hash]
-        site = history_sites.get(torrent_hash) or self._torrent_site(torrent, downloader_type)
+        site = self._normalize_site_name(history_sites.get(torrent_hash) or "")
+        if not site:
+            site = self._torrent_site(torrent, downloader_type)
         site_cache[torrent_hash] = site or ""
         return site_cache[torrent_hash]
 
@@ -2111,9 +2257,10 @@ class QbUploadLimiter(_PluginBase):
         识别种子所属站点：优先通过 tracker 域名匹配，其次匹配标签/分类中的站点名。
 
         公开站（BT）的种子只带公开 tracker（如 anidex、acg.rip、nyaa 等），
-        域名不属于任何已登记站点，这类种子统一归入「公开站（BT）」，
-        以便在站点筛选与站点单独阈值里单独管理，不会与 PT 站点混淆。
-        没有任何 tracker（纯 DHT / 未解析出 announce）时无法判断，返回空表示未知。
+        域名不属于任何已登记站点；勾选「公开站（BT）」时这类种子必须能识别出来。
+        因此除已登记的 PT 站点外，其余情况一律归入「公开站（BT）」：
+        包括公开 tracker、DHT/PeX 占位 tracker，以及完全没有 tracker 的磁力种子
+        （PT 种子文件内嵌 announce，正常不会没有 tracker）。
         """
         tracker_urls = self._torrent_tracker_urls(torrent, downloader_type)
         for url in tracker_urls:
@@ -2121,20 +2268,80 @@ class QbUploadLimiter(_PluginBase):
             if domain:
                 hit = self._lookup_site_by_domain(domain)
                 if hit:
-                    return hit
+                    return self._normalize_site_name(hit)
         for tag in self._torrent_tags(torrent, downloader_type):
             hit = self._site_names.get(str(tag).strip().lower())
             if hit:
-                return hit
+                return self._normalize_site_name(hit)
         category = self._torrent_category(torrent, downloader_type)
         if category:
             hit = self._site_names.get(str(category).strip().lower())
             if hit:
-                return hit
-        # 有 tracker 但都不属于已登记站点：公开 tracker，按公开站（BT）处理
-        if any(self._normalize_domain(url) for url in tracker_urls):
+                return self._normalize_site_name(hit)
+        # 不属于任何已登记 PT 站点：公开 tracker / DHT / 无 tracker 的磁力种子
+        return self.PUBLIC_SITE_NAME
+
+    def _normalize_site_name(self, site: str) -> str:
+        """
+        把站点名称归一到「公开站（BT）」。
+
+        MoviePilot 站点配置里 public=1 的公开站（Nyaa/动漫花园/MiKan 等）在下载
+        历史中记录的是真实站名，统一映射成公开站（BT），与 tracker 识别的结果一致。
+        """
+        name = str(site or "").strip()
+        if not name:
+            return ""
+        if name.lower() in self._public_sites:
             return self.PUBLIC_SITE_NAME
-        return ""
+        return name
+
+    def _site_selected(self, site: str, selected: Optional[Set[str]]) -> bool:
+        """
+        判断种子站点是否在勾选范围内。
+
+        公开站（BT）做双向兼容：勾选了任一公开站站名（历史配置）也视为勾选了
+        「公开站（BT）」，反之亦然，避免升级或改配置后 BT 限速规则悄悄失效。
+        """
+        if not selected:
+            return True
+        key = str(site or "").strip().lower()
+        if not key:
+            return False
+        if key in selected:
+            return True
+        if key == self.PUBLIC_SITE_NAME.lower():
+            return bool(selected & self._public_sites)
+        if key in self._public_sites:
+            return self.PUBLIC_SITE_NAME.lower() in selected
+        return False
+
+    def _fetch_torrents(self, service_name: str, downloader: Any) -> Optional[List[Any]]:
+        """
+        获取下载器种子列表。
+
+        宿主在连接断开时直接返回空列表与错误标志（不抛异常），这里先尝试本地重连
+        再重试一次，避免最长等待宿主的十分钟巡检；仍失败返回 None 并记录原因，
+        调用方据此跳过该下载器并在详情页显示失败状态。
+        """
+        for attempt in (1, 2):
+            try:
+                torrents, error = downloader.get_torrents()
+            except Exception as err:
+                logger.warning(f"{self.LOG_TAG}获取下载器 [{service_name}] 种子列表异常：{err}")
+                torrents, error = [], True
+            if not error:
+                return list(torrents or [])
+            if attempt == 1:
+                is_inactive = getattr(downloader, "is_inactive", None)
+                reconnect = getattr(downloader, "reconnect", None)
+                if callable(is_inactive) and callable(reconnect) and is_inactive():
+                    logger.info(f"{self.LOG_TAG}下载器 [{service_name}] 连接已断开，重连后重试")
+                    try:
+                        reconnect()
+                    except Exception as err:
+                        logger.warning(f"{self.LOG_TAG}下载器 [{service_name}] 重连失败：{err}")
+        logger.warning(f"{self.LOG_TAG}获取下载器 [{service_name}] 种子列表失败")
+        return None
 
     def _lookup_site_by_domain(self, host: str) -> str:
         """
