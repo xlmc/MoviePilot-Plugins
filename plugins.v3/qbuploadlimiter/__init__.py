@@ -19,7 +19,7 @@ import json
 import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -44,7 +44,7 @@ class QbUploadLimiter(_PluginBase):
     plugin_name = "QB上传限速"
     plugin_desc = "仅处理 MoviePilot 已整理入库成功的种子：分享率达到全局或站点单独阈值后自动限制上传速度（qBittorrent 与全局上传限速取较小值）；可选 AI 智能限速——调用系统设置的大模型按种子分享率、上传活跃度与站点账号分享率逐种子智能决策限速；支持多下载器、站点筛选、定时检测，停用/卸载自动恢复不限速。"
     plugin_icon = "Qbittorrent_A.png"
-    plugin_version = "3.3.0"
+    plugin_version = "3.3.1"
     plugin_author = "xlmc"
     author_url = "https://github.com/xlmc"
     project_url = "https://github.com/xlmc/MoviePilot-Plugins"
@@ -1267,19 +1267,20 @@ class QbUploadLimiter(_PluginBase):
         """
         从种子列表中筛选出达到分享率阈值且（可选）属于勾选站点的种子。
 
-        启用站点筛选或配置了站点单独阈值时，一次性批量查询下载历史
-        （hash -> 站点），优先使用 MoviePilot 记录的权威站点信息。
+        每轮检测都批量查询下载历史（hash -> 站点），优先使用 MoviePilot 记录的
+        权威站点信息——站点识别结果同时用于详情页统计、限速通知、站点筛选与站点
+        单独阈值，不能只在勾选站点时才识别。
         每个达标种子实际使用的阈值写入 threshold_cache，供日志准确显示。
 
         AI 智能限速模式（ai_mode=True）：limit 决策按 AI 限速值限速；
         no_limit 决策尊重不限速；无决策（限频期内新活跃、尚未评估）回退阈值规则兜底。
         """
-        # 站点筛选或站点单独阈值至少启用一项时，才需要识别种子所属站点
-        need_site = bool(selected or self._site_share_ratios)
-        history_sites: Dict[str, str] = {}
-        if need_site:
-            hashes = [self._torrent_hash(t, downloader_type) for t in torrents]
-            history_sites = self._load_history_sites(hashes)
+        # 站点识别每轮都要做：详情页统计、限速通知、站点筛选、站点单独阈值
+        # 都依赖站点名称。此前只在「勾选站点或配置了站点单独阈值」时才查下载
+        # 历史，其余情况退化为只看 tracker，未在 MoviePilot 登记的私有站种子
+        # 因此被当成「公开站（BT）」，通知里的站点显示错误。
+        hashes = [self._torrent_hash(t, downloader_type) for t in torrents]
+        history_sites = self._load_history_sites(hashes)
 
         matched = []
         for torrent in torrents:
@@ -1287,9 +1288,8 @@ class QbUploadLimiter(_PluginBase):
             if not torrent_hash:
                 continue
 
-            site = ""
-            if need_site:
-                site = self._resolve_site(torrent, torrent_hash, downloader_type, history_sites, site_cache)
+            # 下载历史（MoviePilot 记录的权威站点）优先，其次 tracker/标签/分类
+            site = self._resolve_site(torrent, torrent_hash, downloader_type, history_sites, site_cache)
             # 站点筛选：无法识别或不属于勾选列表时跳过
             if not self._site_selected(site, selected):
                 continue
@@ -2242,19 +2242,22 @@ class QbUploadLimiter(_PluginBase):
         """
         识别种子所属站点：优先通过 tracker 域名匹配，其次匹配标签/分类中的站点名。
 
-        公开站（BT）的种子只带公开 tracker（如 anidex、acg.rip、nyaa 等），
-        域名不属于任何已登记站点；勾选「公开站（BT）」时这类种子必须能识别出来。
-        因此除已登记的 PT 站点外，其余情况一律归入「公开站（BT）」：
-        包括公开 tracker、DHT/PeX 占位 tracker，以及完全没有 tracker 的磁力种子
-        （PT 种子文件内嵌 announce，正常不会没有 tracker）。
+        兜底只在有「公开站证据」时才归入「公开站（BT）」：完全没有 tracker 的
+        磁力种子、只有 DHT/PeX/LSD 占位符的种子、以及 announce 不带任何凭证的
+        公开 tracker。带 passkey 等凭证、但域名不在站点配置里的私有 tracker
+        （用户没在 MoviePilot 里添加该站）不能冒充公开站，此时返回 tracker 域名，
+        通知和日志里能直接看出种子的真实来源。
         """
-        tracker_urls = self._torrent_tracker_urls(torrent, downloader_type)
-        for url in tracker_urls:
+        unknown_private_domain = ""
+        for url in self._torrent_tracker_urls(torrent, downloader_type):
             domain = self._normalize_domain(url)
-            if domain:
-                hit = self._lookup_site_by_domain(domain)
-                if hit:
-                    return self._normalize_site_name(hit)
+            if not domain:
+                continue
+            hit = self._lookup_site_by_domain(domain)
+            if hit:
+                return self._normalize_site_name(hit)
+            if not unknown_private_domain and self._is_private_tracker(url):
+                unknown_private_domain = domain
         for tag in self._torrent_tags(torrent, downloader_type):
             hit = self._site_names.get(str(tag).strip().lower())
             if hit:
@@ -2264,8 +2267,32 @@ class QbUploadLimiter(_PluginBase):
             hit = self._site_names.get(str(category).strip().lower())
             if hit:
                 return self._normalize_site_name(hit)
-        # 不属于任何已登记 PT 站点：公开 tracker / DHT / 无 tracker 的磁力种子
+        if unknown_private_domain:
+            return unknown_private_domain
+        # 无 tracker（磁力）/ 仅 DHT-PeX-LSD 占位符 / 公开 tracker：公开站
         return self.PUBLIC_SITE_NAME
+
+    @staticmethod
+    def _is_private_tracker(url: str) -> bool:
+        """
+        判断 tracker 地址是否带私有站凭证（passkey / 个人 token）。
+
+        公开 tracker 的 announce 不带用户凭证；私有站 announce 一定带 passkey
+        参数，或把 passkey 直接放进路径（如 /announce/<32位十六进制>）。
+        """
+        try:
+            parsed = urlparse(str(url or "").strip())
+        except Exception:
+            return False
+        for key in parse_qs(parsed.query or ""):
+            if key.lower() in ("passkey", "pk", "authkey"):
+                return True
+        for segment in (parsed.path or "").split("/"):
+            segment = segment.strip()
+            # 路径里的长 token 视为个人凭证；过短（announce、announce.php）不算
+            if len(segment) >= 24 and segment.isalnum():
+                return True
+        return False
 
     def _normalize_site_name(self, site: str) -> str:
         """
@@ -2389,6 +2416,13 @@ class QbUploadLimiter(_PluginBase):
                 tracker = torrent.get("tracker") or ""
                 if tracker:
                     urls.append(str(tracker))
+                # qB 的 info 只给「当前生效」的一个 tracker，而同一批种子可能同时
+                # 带私有 tracker 与备用公开 tracker；从 magnet_uri 的 tr= 补齐全量
+                magnet_uri = str(torrent.get("magnet_uri") or "")
+                if magnet_uri:
+                    for item in parse_qs(urlparse(magnet_uri).query or "").get("tr", []) or []:
+                        if item and str(item) not in urls:
+                            urls.append(str(item))
         else:
             tracker_list = str(getattr(torrent, "trackerList", "") or "").strip()
             if tracker_list:
